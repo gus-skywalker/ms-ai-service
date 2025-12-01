@@ -1,7 +1,8 @@
 fastapi
 uvicorn[standard]
 pydantic
+httpx
+python-jose[cryptography]
 numpy
 pandas
 scikit-learn
-
