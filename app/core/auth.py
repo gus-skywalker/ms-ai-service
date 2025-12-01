@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import httpx
@@ -15,9 +16,6 @@ _jwks_cache: Optional[dict] = None
 
 async def _fetch_jwks() -> dict:
     global _jwks_cache
-    if _jwks_cache is not None:
-        return _jwks_cache
-
     settings = get_settings()
     jwks_url = settings.AUTH_SERVER_URL.rstrip("/") + settings.JWT_JWKS_PATH
 
@@ -63,6 +61,7 @@ async def _decode_token_with_jwks(token: str) -> dict:
         )
         return decoded
     except JWTError as exc:
+        _jwks_cache = None
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {exc}",
@@ -93,4 +92,3 @@ async def get_current_user_id(
         )
 
     return str(user_id)
-
