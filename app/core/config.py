@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Optional
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -11,7 +12,7 @@ class Settings(BaseSettings):
     AUTH_SERVER_URL: str = "http://localhost:9000"
     JWT_JWKS_PATH: str = "/oauth2/jwks"
     JWT_ALGORITHM: str = "RS256"
-    JWT_AUDIENCE: str | None = None
+    JWT_AUDIENCE: Optional[str] = None
     AI_MODEL_DIR: str = "./models"
 
     class Config:

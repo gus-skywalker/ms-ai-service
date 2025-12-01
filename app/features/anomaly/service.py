@@ -2,18 +2,15 @@ from __future__ import annotations
 
 from typing import List
 
-from app.main import (
+from app.features.anomaly.types import (
     AnomalyDetectionRequest,
     AnomalyDetectionResponse,
-)
-from app.features.anomaly.types import (
     AnomalyDetectionItem,
     AnomalyDetectionSummary,
     AnomalyExpectedRange,
     AnomalyExpense,
 )
 from app.utils.preprocessing import filter_user_transactions, filter_by_type
-from app.utils.dates import parse_iso_date, month_key
 from app.utils.stats import safe_mean, population_std
 
 
