@@ -299,3 +299,112 @@ Next actions I can take for you (pick one)
 - Produce unit tests for the auth dependency and a sample route.
 
 Please tell me which next action you want and provide JWT verification details (claim name and algorithm + secret/public key location).
+
+## 10. Current features inventory (app/features)
+
+This section was revised to use a test-driven re-evaluation policy: any feature that has unit/integration/e2e tests covering its logic or its endpoints should be considered "Implemented". Partial test coverage => "Partially implemented". No tests => "Stub" or "Missing".
+
+Quick rule (applies to your repo review)
+- Implemented: there is at least one test file that imports or exercises the feature code or the endpoint.
+- Partially implemented: tests exist but cover only helper logic, not endpoint wiring or edge cases.
+- Stub/Missing: no tests and only placeholder code or no folder at all.
+
+Quick commands to detect tests (run in repo root)
+- List tests that reference a feature folder:
+  - grep -R --line-number "app/features/prediction" tests || true
+  - grep -R --line-number "prediction" tests || true
+- Run pytest to show which tests fail/cover features:
+  - pytest -q -k prediction || true
+- List test files:
+  - find tests -name "*prediction*.py" -o -name "*anomaly*.py" || true
+
+How to finalize statuses
+1. Run the grep/find commands above and note test file paths.
+2. For each feature below, paste the matching test files into "Tests" and update "Status" accordingly.
+3. Fill "Actual files / functions" with exact module/function names found (e.g., app/features/prediction/service.py -> predict_monthly_expenses).
+
+Template per feature (fill in from repo):
+
+10.1 prediction
+- Status: (Implemented / Partially implemented / Stub / Missing) — mark Implemented if tests reference prediction logic or endpoint.
+- Actual files / functions: (e.g., app/features/prediction/service.py -> predict_monthly_expenses)
+- Endpoint(s) used: POST /api/v1/ai/monthly-expenses-prediction
+- Inputs expected: { historicalTransactions, categoryId?, forecastMonths? } (user id must be taken from JWT)
+- Outputs produced: { monthlyForecast: [...], summary: {...}, confidence? }
+- Tests: (list test files, e.g., tests/features/test_prediction_service.py)
+- Known limitations:
+  - currently uses simple monthly aggregation + baseline trend
+- Next tasks (priority):
+  1. Confirm function name and wire get_current_user_id dependency.
+  2. Add unit tests for edge cases not covered yet.
+  3. Add models_registry usage and per-user model fallback if missing.
+
+10.2 anomaly
+- Status: (Implemented / Partially implemented / Stub / Missing)
+- Actual files / functions: (e.g., app/features/anomaly/service.py -> detect_anomalies)
+- Endpoint(s) used: POST /api/v1/ai/anomaly-detection
+- Inputs expected: { transactions[], sensitivity? } (user id from JWT)
+- Outputs produced: { anomalies: [{ transactionId, score, reason }], stats: {...} }
+- Tests: (list test files)
+- Known limitations:
+  - current algorithm: simple z-score; not robust to skewed distributions
+- Next tasks (priority):
+  1. Switch to MAD scoring and add per-category stats.
+  2. Add tests that cover edge cases (single-value series, zero variance).
+
+10.3 autocat (auto-categorization)
+- Status: (Implemented / Partially implemented / Stub / Missing)
+- Actual files / functions: (e.g., app/features/autocat/service.py -> auto_categorize)
+- Endpoint(s) used: POST /api/v1/ai/auto-categorize
+- Inputs expected: { expenses: [{ expenseId?, description?, amount, paymentMethodId? }] } (user id from JWT)
+- Outputs produced: { categorized: [{ expenseId?, categoryId, probability? }], modelVersion? }
+- Tests: (list test files)
+- Known limitations:
+  - currently uses heuristic matching / placeholder model (or note real implementação)
+- Next tasks (priority):
+  1. If tests are missing for endpoint wiring, add integration tests exercising the endpoint payload.
+  2. Add training/evaluation tests for TF-IDF pipeline when introduced.
+
+10.4 savings
+- Status: (Implemented / Partially implemented / Stub / Missing)
+- Actual files / functions: (e.g., app/features/savings/service.py -> savings_recommendations)
+- Endpoint(s) used: POST /api/v1/ai/savings-recommendations
+- Inputs expected: { savingsGoalAmount?, targetDate?, optional historicalSummary? } (user id from JWT)
+- Outputs produced: { plan: [{ categoryId, suggestedReduction, impact }], timeline, confidence }
+- Tests: (list test files)
+- Known limitations:
+  - Mostly rule-based; needs category importance classification and variability measures
+- Next tasks (priority):
+  1. Add use of historicalSummary when provided.
+  2. Add simulated scenarios and unit tests for recommendations.
+
+10.5 cashflow
+- Status: (Implemented / Partially implemented / Stub / Missing)
+- Actual files / functions: (e.g., app/features/cashflow/service.py -> cashflow_insights)
+- Endpoint(s) used: POST /api/v1/ai/cashflow-insights
+- Inputs expected: { months? } (user id from JWT)
+- Outputs produced: { projections: [{ month, balance }], insights: [string], riskScore }
+- Tests: (list test files)
+- Known limitations:
+  - projection model is simplified; no per-user trained model persisted yet
+- Next tasks (priority):
+  1. Reuse prediction logic for projected despesas.
+  2. Add scenario stress tests and unit tests.
+
+10.6 cross-feature items (shared concerns)
+- Auth: Features must extract userId from the JWT (do not rely on body-provided userId). If tests prove auth wiring exists, mark auth as implemented.
+- models_registry: confirm presence and shape (app/core/models_registry.py). If tests cover persistence/load, mark implemented.
+- Logging: ensure tests or code assertions validate structured logs include userId, feature name and model/version when required.
+- Tests: prefer adding small smoke tests that call each route with a test JWT and assert non-error responses and expected keys.
+- CI: ensure CI runs pytest and fails on regressions (mark implemented if current CI config does this).
+
+10.7 How to convert this template into concrete documentation quickly
+- Run: ls app/features and replace "Actual files / functions" with real filenames and exported functions.
+- Run greps above to collect test filenames and paste them into the "Tests" field.
+- Mark features with tests as Implemented. For partial coverage, mark Partially implemented and list missing tests as TODO.
+
+If you want, I can:
+- Parse a list of test files you paste here and auto-fill the "Tests" and set Status values.
+- Or, if you allow, I can generate the grep output command set you can run locally and then feed me the results so I auto-complete the inventory.
+
+---
