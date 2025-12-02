@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import List
+import logging
 
 from app.features.cashflow.types import (
     CashflowInsightsRequest,
@@ -13,12 +14,17 @@ from app.utils.dates import future_month_keys
 
 
 CASHFLOW_VERSION = "cashflow_v1"
+logger = logging.getLogger(__name__)
 
 
 def get_cashflow_insights(
     user_id: str,
     request: CashflowInsightsRequest,
 ) -> CashflowInsightsResponse:
+    logger.info(
+        "cashflow insight request",
+        extra={"user_id": user_id, "months": request.months},
+    )
     months = request.months or 6
     start = date.today().replace(day=1)
     future_keys = future_month_keys(start, months)
@@ -65,10 +71,24 @@ def get_cashflow_insights(
     insights = [
         "Fluxo de caixa projetado com base em médias simples de renda e despesa.",
     ]
+    forecast = forecast_items
+    if any(item.status == "deficit" for item in forecast):
+        insights = [
+            "Há meses projetados com déficit. Considere reduzir despesas ou aumentar receitas."
+        ]
+
+    logger.info(
+        "cashflow insight response",
+        extra={
+            "user_id": user_id,
+            "months": request.months,
+            "deficit_months": sum(1 for item in forecast if item.status == "deficit"),
+        },
+    )
 
     return CashflowInsightsResponse(
         currentBalance=round(current_balance, 2),
-        forecast=forecast_items,
+        forecast=forecast,
         averageMonthlyBalance=round(avg_balance, 2),
         insights=insights,
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -15,9 +16,7 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: Optional[str] = None
     AI_MODEL_DIR: str = "./models"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
 @lru_cache(maxsize=1)

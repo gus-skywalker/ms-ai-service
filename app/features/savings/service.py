@@ -6,15 +6,26 @@ from app.features.savings.types import (
     SavingsPlan,
     SavingsAction,
 )
-
+import logging
 
 SAVINGS_VERSION = "savings_v1"
+
+logger = logging.getLogger(__name__)
 
 
 def generate_savings_recommendations(
     user_id: str,
     request: SavingsRecommendationRequest,
 ) -> SavingsRecommendationResponse:
+    logger.info(
+        "savings recommendation request",
+        extra={
+            "user_id": user_id,
+            "goal": request.savingsGoalAmount,
+            "target_date": request.targetDate,
+        },
+    )
+
     goal = request.savingsGoalAmount or 200.0
 
     actions = [
@@ -56,4 +67,14 @@ def generate_savings_recommendations(
         "considere aplicar as ações sugeridas acima."
     )
 
-    return SavingsRecommendationResponse(plan=plan, summaryText=summary)
+    response = SavingsRecommendationResponse(plan=plan, summaryText=summary)
+    logger.info(
+        "savings recommendation response",
+        extra={
+            "user_id": user_id,
+            "actions": len(actions),
+            "goal": goal,
+        },
+    )
+
+    return response

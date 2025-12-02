@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List
+import logging
 
 from app.features.autocat.types import (
     AutoCategorizeRequest,
@@ -9,6 +10,8 @@ from app.features.autocat.types import (
     CategorySuggestion,
 )
 
+
+logger = logging.getLogger(__name__)
 
 AUTOCAT_VERSION = "autocat_v1"
 
@@ -39,6 +42,13 @@ def auto_categorize_expenses(
     user_id: str,
     request: AutoCategorizeRequest,
 ) -> AutoCategorizeResponse:
+    logger.info(
+        "auto-categorization request",
+        extra={
+            "user_id": user_id,
+            "expense_count": len(request.expenses),
+        },
+    )
     suggestions: List[AutoCategorizeSuggestion] = []
 
     for exp in request.expenses:
@@ -70,4 +80,11 @@ def auto_categorize_expenses(
         )
         suggestions.append(suggestion)
 
+    logger.info(
+        "auto-categorization response",
+        extra={
+            "user_id": user_id,
+            "suggestion_count": len(suggestions),
+        },
+    )
     return AutoCategorizeResponse(suggestions=suggestions)

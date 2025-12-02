@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List
+import logging
 
 from app.features.anomaly.types import (
     AnomalyDetectionRequest,
@@ -14,6 +15,8 @@ from app.utils.preprocessing import filter_user_transactions, filter_by_type
 from app.utils.stats import safe_mean, population_std
 
 
+logger = logging.getLogger(__name__)
+
 ANOMALY_VERSION = "anomaly_v1"
 
 
@@ -21,6 +24,14 @@ def detect_anomalies(
     user_id: str,
     request: AnomalyDetectionRequest,
 ) -> AnomalyDetectionResponse:
+    logger.info(
+        "anomaly detection request",
+        extra={
+            "user_id": user_id,
+            "transactions": len(request.transactions),
+            "sensitivity": request.sensitivity,
+        },
+    )
     transactions = filter_user_transactions(request.transactions, user_id)
     expenses = filter_by_type(transactions, "EXPENSE")
 
@@ -98,6 +109,14 @@ def detect_anomalies(
         totalAnomalousAmount=round(total_anomalous_amount, 2),
         highestAnomalyScore=round(highest_score, 2),
         summaryText=summary_text,
+    )
+    logger.info(
+        "anomaly response",
+        extra={
+            "user_id": user_id,
+            "anomalies": len(anomalies),
+            "highest_score": round(highest_score, 2),
+        },
     )
 
     return AnomalyDetectionResponse(anomalies=anomalies, summary=summary)
