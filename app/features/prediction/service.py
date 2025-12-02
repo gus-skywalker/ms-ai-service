@@ -66,6 +66,19 @@ def predict_monthly_expenses(
     user_id: str,
     request: MonthlyExpensesPredictionRequest,
 ) -> MonthlyExpensesPredictionResponse:
+    """
+    Main entry point for monthly expense prediction.
+    Decides whether to use a per-user RandomForest model or fallback heuristic based on available history.
+    Handles model loading, training, and fallback logic.
+
+    Args:
+        user_id: The user identifier (from token).
+        request: MonthlyExpensesPredictionRequest with category, forecastMonths, and historical transactions.
+
+    Returns:
+        MonthlyExpensesPredictionResponse with predictions, total, and model accuracy.
+    """
+
     logger.info(
         "prediction request started",
         extra={
@@ -213,6 +226,20 @@ def _train_prediction_model(
     month_series: Sequence[Tuple[str, float]],
     user_id: str,
 ) -> PredictionModelPayload:
+    """
+    Trains a RandomForestRegressor for the user and saves it via ModelRegistry.
+    Computes residuals and confidence, persists model path and stats.
+
+    Args:
+        registry: ModelRegistry instance.
+        key: ModelKey for this user/model.
+        month_series: List of (YYYY-MM, total_amount) tuples, sorted.
+        user_id: The user identifier.
+
+    Returns:
+        PredictionModelPayload with model_path, feature_order, stats, avg, months, trained_months, recent_totals.
+    """
+
     features, targets = _build_training_data(month_series)
     logger.debug(
         "training data built",
@@ -273,6 +300,19 @@ def _train_prediction_model(
 def _build_training_data(
     month_series: Sequence[Tuple[str, float]]
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Builds feature and target arrays for model training from month_series.
+    Each row is [total_amount, mov3, mov6, month_of_year], target is next month's value.
+
+    Args:
+        month_series: List of (YYYY-MM, total_amount) tuples, sorted.
+
+    Returns:
+        Tuple (X, y):
+            X: np.ndarray of shape (n_samples, 4)
+            y: np.ndarray of shape (n_samples,)
+    """
+
     feature_rows: List[List[float]] = []
     targets: List[float] = []
 
@@ -294,6 +334,24 @@ def _build_predictions(
     month_series: Sequence[Tuple[str, float]],
     user_id: str,
 ) -> Tuple[List[MonthlyExpensePredictionItem], float]:
+    """
+    Dispatches to model-based or baseline prediction depending on model presence.
+
+    Args:
+        payload: Model payload (may contain model_path, stats, etc).
+        model: Trained RandomForestRegressor or None.
+        future_keys: List of YYYY-MM strings for months to predict.
+        category_id: Category for prediction (optional).
+        historical_avg: Historical average for fallback.
+        month_series: List of (YYYY-MM, total_amount) tuples, sorted.
+        user_id: The user identifier.
+
+    Returns:
+        Tuple (predictions, confidence):
+            predictions: List of MonthlyExpensePredictionItem
+            confidence: float (model confidence or fallback)
+    """
+
     stats = payload.get("stats", {})
     if model and future_keys:
         return _predict_with_model(
@@ -326,6 +384,25 @@ def _predict_with_model(
     month_series: Sequence[Tuple[str, float]],
     user_id: str,
 ) -> Tuple[List[MonthlyExpensePredictionItem], float]:
+    """
+    Predicts future months using a trained RandomForestRegressor and rolling features.
+
+    Args:
+        payload: Model payload with stats and feature order.
+        model: Trained RandomForestRegressor.
+        future_keys: List of YYYY-MM strings for months to predict.
+        category_id: Category for prediction (optional).
+        historical_avg: Historical average for fallback.
+        stats: Model stats (residual_std, confidence, etc).
+        month_series: List of (YYYY-MM, total_amount) tuples, sorted.
+        user_id: The user identifier.
+
+    Returns:
+        Tuple (predictions, confidence):
+            predictions: List of MonthlyExpensePredictionItem
+            confidence: float (model confidence)
+    """
+
     history_amounts = [amount for _, amount in month_series]
     if not history_amounts:
         fallback_seed = payload.get("recent_totals") or [historical_avg]
@@ -374,6 +451,23 @@ def _predict_baseline(
     month_series: Sequence[Tuple[str, float]],
     user_id: str,
 ) -> Tuple[List[MonthlyExpensePredictionItem], float]:
+    """
+    Predicts future months using the fallback heuristic (historical average).
+
+    Args:
+        payload: Model payload (may contain stats/confidence).
+        future_keys: List of YYYY-MM strings for months to predict.
+        category_id: Category for prediction (optional).
+        historical_avg: Historical average for fallback.
+        month_series: List of (YYYY-MM, total_amount) tuples, sorted.
+        user_id: The user identifier.
+
+    Returns:
+        Tuple (predictions, confidence):
+            predictions: List of MonthlyExpensePredictionItem
+            confidence: float (fallback confidence)
+    """
+
     confidence = float(payload.get("stats", {}).get("confidence", 0.5))
     predictions: List[MonthlyExpensePredictionItem] = []
     history_amounts = [amount for _, amount in month_series] or [historical_avg]
@@ -407,6 +501,17 @@ def _predict_baseline(
 
 
 def _derive_trend(history_amounts: Sequence[float], user_id: Optional[str] = None) -> str:
+    """
+    Determines the trend (increasing, decreasing, stable) based on recent and previous averages.
+
+    Args:
+        history_amounts: List of monthly totals (float).
+        user_id: The user identifier (optional, for logging).
+
+    Returns:
+        str: 'increasing', 'decreasing', or 'stable'.
+    """
+
     if len(history_amounts) < 4:
         return _Trend.STABLE
     recent = safe_mean(history_amounts[-3:])
@@ -436,6 +541,17 @@ def _derive_trend(history_amounts: Sequence[float], user_id: Optional[str] = Non
 
 
 def _sorted_month_series(by_month: Dict[str, float], user_id: str) -> List[Tuple[str, float]]:
+    """
+    Validates and sorts a dict of {YYYY-MM: total_amount} into a list of (YYYY-MM, total_amount), dropping malformed keys.
+
+    Args:
+        by_month: Dict mapping YYYY-MM to total_amount.
+        user_id: The user identifier (for logging).
+
+    Returns:
+        List of (YYYY-MM, total_amount) tuples, sorted chronologically.
+    """
+
     cleaned: List[Tuple[str, float]] = []
     invalid_keys: List[str] = []
     for key, total in by_month.items():
@@ -469,6 +585,16 @@ def _sorted_month_series(by_month: Dict[str, float], user_id: str) -> List[Tuple
 
 
 def _month_of_year_from_key(key: str) -> int:
+    """
+    Extracts the month (1-12) from a YYYY-MM string.
+
+    Args:
+        key: Month string in format YYYY-MM.
+
+    Returns:
+        int: Month as integer (1-12).
+    """
+
     try:
         _, month_str = key.split("-")
         return int(month_str)
@@ -478,10 +604,33 @@ def _month_of_year_from_key(key: str) -> int:
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """
+    Clamps a value between minimum and maximum.
+
+    Args:
+        value: Value to clamp.
+        minimum: Minimum allowed.
+        maximum: Maximum allowed.
+
+    Returns:
+        float: Clamped value.
+    """
+
     return max(minimum, min(maximum, value))
 
 
 def _save_rf_model(model: RandomForestRegressor, key: ModelKey) -> Path:
+    """
+    Serializes and saves a RandomForestRegressor to disk using joblib.
+
+    Args:
+        model: Trained RandomForestRegressor.
+        key: ModelKey for user/model.
+
+    Returns:
+        Path: Path to saved model file.
+    """
+
     settings = get_settings()
     model_dir = Path(settings.AI_MODEL_DIR) / key.feature / key.version / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -492,6 +641,16 @@ def _save_rf_model(model: RandomForestRegressor, key: ModelKey) -> Path:
 
 
 def _load_rf_model(model_path: Optional[str]) -> Optional[RandomForestRegressor]:
+    """
+    Loads a RandomForestRegressor from disk using joblib.
+
+    Args:
+        model_path: Path to model file (str or None).
+
+    Returns:
+        RandomForestRegressor if file exists, else None.
+    """
+
     if not model_path:
         return None
     path = Path(model_path)
