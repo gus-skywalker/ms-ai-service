@@ -11,9 +11,28 @@ def path_for_user(user_id: str, filename: str) -> str:
 def save_user_data(user_id, raw_transactions, monthly_aggregates, mode, sync_type):
     user_dir = os.path.join(STORAGE_PATH, str(user_id))
     os.makedirs(user_dir, exist_ok=True)
+    # Carrega transações existentes se incremental
+    existing_path = path_for_user(user_id, "raw_transactions.parquet")
+    existing_df = None
+    if mode == "incremental" and os.path.exists(existing_path):
+        existing_df = pd.read_parquet(existing_path)
+    # Processa transações
     if raw_transactions:
         df = pd.DataFrame(raw_transactions)
+        # Remove transações deletadas
+        if "deleted" in df.columns:
+            deleted_ids = df[df["deleted"] == True]["transactionId"].tolist()
+            if existing_df is not None:
+                existing_df = existing_df[~existing_df["transactionId"].isin(deleted_ids)]
+            df = df[df["deleted"] != True]
+        # Mescla incremental
+        if mode == "incremental" and existing_df is not None:
+            # Remove duplicadas pelo transactionId
+            df = pd.concat([existing_df, df]).drop_duplicates(subset=["transactionId"], keep="last")
         df.to_parquet(path_for_user(user_id, "raw_transactions.parquet"))
+    elif mode == "incremental" and existing_df is not None:
+        # Só deletou, salva o existente filtrado
+        existing_df.to_parquet(path_for_user(user_id, "raw_transactions.parquet"))
     if monthly_aggregates:
         df = pd.DataFrame([monthly_aggregates])
         df.to_parquet(path_for_user(user_id, "monthly_series.parquet"))

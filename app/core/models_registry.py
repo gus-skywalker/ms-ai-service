@@ -99,10 +99,12 @@ def compute_anomaly_stats(user_id):
     df = pd.read_parquet(path)
     stats = {}
     for cat in df["categoryId"].dropna().unique():
+        # Garante que a chave do dict será str
+        cat_key = str(cat)
         amounts = df[df["categoryId"] == cat]["amount"].values
         median = float(pd.Series(amounts).median())
-        mad = float(pd.Series(amounts).mad())
-        stats[cat] = {"median": median, "mad": mad}
+        mad = float((abs(pd.Series(amounts) - median)).median())
+        stats[cat_key] = {"median": median, "mad": mad}
     # Save as JSON
     out_path = path_for_user(user_id, "anomaly_stats.json")
     with open(out_path, "w") as f:
@@ -113,4 +115,3 @@ def run_async_training(user_id):
     threading.Thread(target=train_prediction, args=(user_id,), daemon=True).start()
     threading.Thread(target=train_autocat, args=(user_id,), daemon=True).start()
     threading.Thread(target=compute_anomaly_stats, args=(user_id,), daemon=True).start()
-
