@@ -24,6 +24,7 @@ class AutoCategorizeRequestItem(BaseModel):
     description: Optional[str]
     amount: float
     paymentMethodId: Optional[int]
+    categoryId: Optional[int] = None
 
 
 class AutoCategorizeRequest(BaseModel):
