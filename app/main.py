@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Header, HTTPException, Request
 
-from app.core.auth import get_current_user_id
+from app.core.auth import get_current_user_id, verify_service_token
+from app.core.sync import handle_sync_request
 from app.features.prediction.service import predict_monthly_expenses
 from app.features.prediction.types import (
     MonthlyExpensesPredictionRequest,
@@ -78,6 +79,15 @@ async def cashflow_insights(
     user_id: str = Depends(get_current_user_id),
 ) -> CashflowInsightsResponse:
     return get_cashflow_insights(user_id=user_id, request=req)
+
+
+@app.post("/internal/ai/sync-user-data")
+async def sync_user_data(request: Request, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    payload = await request.json()
+    result = handle_sync_request(payload)
+    return result
 
 
 @app.get("/health")

@@ -15,6 +15,7 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.preprocessing import LabelEncoder
 
 from app.core.config import get_settings
+from app.core.feature_store import UserFinancialDataProvider
 from app.core.models_registry import ModelKey, get_model_registry
 from app.features.autocat.types import (
     AutoCategorizeRequest,
@@ -46,7 +47,12 @@ class CorruptedModelError(Exception):
     pass
 
 def get_user_labeled_history(user_id: str) -> List[AiTransaction]:
-    """Entry point to fetch historical labeled transactions. Override in tests or adapters."""
+    provider = UserFinancialDataProvider(user_id)
+    txs = provider.get_user_transactions(months=24)
+    if txs:
+        # Filtra apenas transações com categoria
+        return [AiTransaction(**t) for t in txs if t.get("categoryId")]
+    # Fallback para store em memória
     if user_id in _HISTORY_STORE:
         return _HISTORY_STORE[user_id]
     return []

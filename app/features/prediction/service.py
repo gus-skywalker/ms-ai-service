@@ -11,6 +11,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 
 from app.core.config import get_settings
+from app.core.feature_store import UserFinancialDataProvider
 from app.core.models_registry import ModelKey, get_model_registry
 from app.features.prediction.types import (
     MonthlyExpensesPredictionRequest,
@@ -88,40 +89,46 @@ def predict_monthly_expenses(
             "historical_count": len(request.historicalTransactions),
         },
     )
+    provider = UserFinancialDataProvider(user_id)
+    # Tenta buscar dados sincronizados
+    monthly_totals = provider.get_monthly_totals(months=24)
+    if monthly_totals and isinstance(monthly_totals, list) and monthly_totals[0].get("income"):
+        # Reconstrói histórico a partir do feature store
+        by_month = {}
+        for m in monthly_totals:
+            # Soma despesas do mês
+            expenses_dict = m.get("expenses", {})
+            for k, v in expenses_dict.items():
+                by_month[k] = by_month.get(k, 0) + v
+        month_series = _sorted_month_series(by_month, user_id=user_id)
+        historical_avg = safe_mean(amount for _, amount in month_series) if month_series else None
+    else:
+        # Fallback para request payload
+        historical = filter_user_transactions(request.historicalTransactions, user_id)
+        expenses = filter_by_type(historical, "EXPENSE")
+        by_month = group_transactions_by_month_amount(expenses)
+        month_series = _sorted_month_series(by_month, user_id=user_id)
+        historical_avg = safe_mean(amount for _, amount in month_series) if month_series else None
 
-    historical = filter_user_transactions(request.historicalTransactions, user_id)
-    expenses = filter_by_type(historical, "EXPENSE")
+    logger.info(
+        "prediction request processed",
+        extra={
+            "user_id": user_id,
+            "month_count": len(month_series),
+            "historical_avg": historical_avg,
+        },
+    )
 
-    registry = get_model_registry()
-    model_key = ModelKey(feature="prediction", version=PREDICTION_VERSION, user_id=user_id)
-    cached_payload: PredictionModelPayload = registry.load_model(model_key) or {}
-
-    by_month = group_transactions_by_month_amount(expenses)
-    month_series = _sorted_month_series(by_month, user_id=user_id)
-    month_count = len(month_series)
-
-    if not month_series:
-        logger.warning(
-            "no valid historical months found; falling back to cached data",
-            extra={
-                "user_id": user_id,
-                "raw_months": len(by_month),
-            },
-        )
-        if not cached_payload.get("avg") and not cached_payload.get("model_path"):
-            return MonthlyExpensesPredictionResponse(
-                predictions=[],
-                totalPredicted=0.0,
-                modelAccuracy=None,
-            )
-
-    historical_avg = safe_mean(amount for _, amount in month_series) if month_series else cached_payload.get("avg")
-
-    payload = cached_payload
+    payload = {}
     model: Optional[RandomForestRegressor] = None
     force_baseline = False
 
-    if month_count >= MIN_MONTHS_FOR_MODEL:
+    if len(month_series) >= MIN_MONTHS_FOR_MODEL:
+        model_key = ModelKey(feature="prediction", version=PREDICTION_VERSION, user_id=user_id)
+        registry = get_model_registry()
+        cached_payload: PredictionModelPayload = registry.load_model(model_key) or {}
+
+        payload = cached_payload
         if payload.get("model_path"):
             model = _load_rf_model(payload.get("model_path"))
             if model is not None:
@@ -140,7 +147,7 @@ def predict_monthly_expenses(
                 payload.clear()
                 avg = safe_mean(amount for _, amount in month_series)
                 payload["avg"] = avg
-                payload["months"] = month_count
+                payload["months"] = len(month_series)
                 payload["trained_months"] = 0
                 model = None
                 force_baseline = True
@@ -148,7 +155,7 @@ def predict_monthly_expenses(
             not force_baseline
             and (
                 payload.get("model_path") is None
-                or payload.get("trained_months", 0) < month_count
+                or payload.get("trained_months", 0) < len(month_series)
                 or model is None
             )
         )
@@ -157,7 +164,7 @@ def predict_monthly_expenses(
                 "training prediction model",
                 extra={
                     "user_id": user_id,
-                    "month_count": month_count,
+                    "month_count": len(month_series),
                 },
             )
             payload = _train_prediction_model(registry, model_key, month_series, user_id=user_id)
@@ -165,7 +172,7 @@ def predict_monthly_expenses(
     elif not payload.get("model_path") and historical_avg is not None:
         payload = {
             "avg": historical_avg,
-            "months": month_count,
+            "months": len(month_series),
             "trained_months": 0,
         }
         model = None

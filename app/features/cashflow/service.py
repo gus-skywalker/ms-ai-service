@@ -12,6 +12,7 @@ from app.features.cashflow.types import (
     CashflowAlert,
 )
 from app.utils.dates import future_month_keys
+from app.core.feature_store import UserFinancialDataProvider
 
 CASHFLOW_VERSION = "cashflow_v1"
 logger = logging.getLogger(__name__)
@@ -29,20 +30,24 @@ def get_cashflow_insights(
             extra={"user_id": user_id, "months": months},
         )
         raise ValueError("months must be an integer between 1 and 24")
-
+    provider = UserFinancialDataProvider(user_id)
+    monthly_totals = provider.get_monthly_totals(months=months)
+    if monthly_totals and isinstance(monthly_totals, list) and monthly_totals[0].get("income"):
+        # Reconstrói baseline a partir do feature store
+        base_income = max(monthly_totals[0].get("income", {}).values()) if monthly_totals[0].get("income") else 5000.0
+        base_expenses = max(monthly_totals[0].get("expenses", {}).values()) if monthly_totals[0].get("expenses") else 4200.0
+        current_balance = provider.get_current_balance() or 3500.0
+    else:
+        base_income = 5000.0
+        base_expenses = 4200.0
+        current_balance = 3500.0
     start = date.today().replace(day=1)
     future_keys = future_month_keys(start, months)
-
-    base_income = 5000.0
-    base_expenses = 4200.0
-    current_balance = 3500.0
     balance = current_balance
     forecast_items: List[CashflowForecastItem] = []
     deficits = 0
     balances = []
-
     for i, key in enumerate(future_keys):
-        # Add a 1% trend and small random variation
         predicted_income = base_income * (1.01 ** i) + random.uniform(-50, 50)
         predicted_expenses = base_expenses * (1.01 ** i) + random.uniform(-50, 50)
         balance = balance + predicted_income - predicted_expenses
@@ -56,7 +61,7 @@ def get_cashflow_insights(
                 message="Possível déficit projetado. Considere reduzir despesas ou aumentar receitas.",
                 suggestions=[
                     "Reveja gastos discricionários",
-                    "Avalie oportunidades de renda extra",
+                    "Avalie oportunidades de renda extra"
                 ],
             )
         forecast_items.append(
@@ -69,22 +74,16 @@ def get_cashflow_insights(
                 alert=alert,
             )
         )
-
-    average_balance = (
-        sum(balances) / len(balances) if balances else 0.0
-    )
+    average_balance = sum(balances) / len(balances) if balances else 0.0
     insights = []
     if deficits == 0:
-        insights.append(
-            "Fluxo de caixa estável: Nenhum déficit previsto nos próximos meses."
-        )
+        insights.append("Fluxo de caixa estável: Nenhum déficit previsto nos próximos meses.")
     if deficits > 2:
         insights.append("Risco financeiro relevante: múltiplos déficits previstos.")
     if average_balance < 0:
         insights.append("Atenção: saldo médio projetado negativo.")
     if not insights:
         insights.append("Acompanhe seu fluxo de caixa para evitar surpresas.")
-
     logger.info(
         "cashflow insight response",
         extra={
@@ -93,7 +92,6 @@ def get_cashflow_insights(
             "deficits": deficits,
         },
     )
-
     return CashflowInsightsResponse(
         currentBalance=current_balance,
         forecast=forecast_items,

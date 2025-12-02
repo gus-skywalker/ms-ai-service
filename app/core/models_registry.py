@@ -1,109 +1,116 @@
-from __future__ import annotations
-
-import pickle
-from collections import OrderedDict
-from dataclasses import dataclass
+import os
+import json
+import joblib
+from typing import Optional
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
 
-from app.core.config import get_settings
+MODEL_BASE_PATH = "models"
 
-
-@dataclass(frozen=True)
 class ModelKey:
-    feature: str
-    version: str
-    user_id: Optional[str] = None
+    def __init__(self, feature: str, version: str, user_id: Optional[str] = None):
+        self.feature = feature
+        self.version = version
+        self.user_id = user_id
 
-    @property
-    def scope(self) -> str:
-        return "user" if self.user_id else "global"
-
+    def path(self):
+        parts = [MODEL_BASE_PATH, self.feature, self.version]
+        if self.user_id:
+            parts.append(str(self.user_id))
+        return os.path.join(*parts)
 
 class ModelRegistry:
-    """Filesystem-backed registry for feature models."""
+    def save_model(self, key: ModelKey, payload):
+        path = key.path()
+        os.makedirs(path, exist_ok=True)
+        file_path = os.path.join(path, "model.joblib")
+        joblib.dump(payload, file_path)
+        meta_path = os.path.join(path, "meta.json")
+        with open(meta_path, "w") as f:
+            json.dump({"feature": key.feature, "version": key.version, "user_id": key.user_id}, f)
 
-    def __init__(
-        self,
-        base_dir: Path,
-        cache_enabled: bool = True,
-        max_cache_entries: int = 32,
-    ) -> None:
-        self._base_dir = base_dir
-        self._base_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_enabled = cache_enabled
-        self._max_cache_entries = max_cache_entries
-        self._cache: "OrderedDict[ModelKey, Any]" = OrderedDict()
-
-    # Public API ------------------------------------------------------------
-    def load_model(self, key: ModelKey) -> Any | None:
-        if self._cache_enabled:
-            cached = self._cache.get(key)
-            if cached is not None:
-                return cached
-
-        path = self._resolve_path(key)
-        if not path.exists():
+    def load_model(self, key: ModelKey):
+        path = key.path()
+        file_path = os.path.join(path, "model.joblib")
+        if not os.path.exists(file_path):
             return None
+        return joblib.load(file_path)
 
-        with path.open("rb") as fh:
-            model = pickle.load(fh)
+    def get_model_path(self, key: ModelKey):
+        return os.path.join(key.path(), "model.joblib")
 
-        self._remember_cache(key, model)
-        return model
+_registry = ModelRegistry()
 
-    def save_model(self, key: ModelKey, model: Any) -> Path:
-        path = self._resolve_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+def get_model_registry():
+    return _registry
 
-        with path.open("wb") as fh:
-            pickle.dump(model, fh)
+def get_model_path(feature, version, user_id=None):
+    key = ModelKey(feature, version, user_id)
+    return _registry.get_model_path(key)
 
-        self._remember_cache(key, model)
-        return path
+def save_model(feature, version, model_obj, user_id=None):
+    key = ModelKey(feature, version, user_id)
+    _registry.save_model(key, model_obj)
 
-    def delete_model(self, key: ModelKey) -> None:
-        path = self._resolve_path(key)
-        if path.exists():
-            path.unlink()
-        self._forget_cache(key)
+def load_model(feature, version, user_id=None, fallback=True):
+    key = ModelKey(feature, version, user_id)
+    model = _registry.load_model(key)
+    if model is None and fallback:
+        return _registry.load_model(ModelKey(feature, version, None))
+    return model
 
-    def list_user_ids(self, feature: str, version: str) -> Iterable[str]:
-        user_dir = self._base_dir / feature / version / "user"
-        if not user_dir.exists():
-            return []
-        return [p.stem for p in user_dir.glob("*.pkl")]
+# --- Trainer skeletons ---
+import pandas as pd
+import threading
 
-    # Internal helpers ------------------------------------------------------
-    def _resolve_path(self, key: ModelKey) -> Path:
-        base = self._base_dir / key.feature / key.version
-        if key.user_id:
-            return base / "user" / f"{key.user_id}.pkl"
-        return base / "global.pkl"
+def train_prediction(user_id):
+    # Load monthly_series.parquet
+    from app.core.feature_store import path_for_user
+    path = path_for_user(user_id, "monthly_series.parquet")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path)
+    # Simple baseline: mean of expenses
+    expenses = df.iloc[0].get("expenses", {})
+    avg = sum(expenses.values()) / len(expenses) if expenses else 0.0
+    save_model("prediction", "v1", {"avg": avg}, user_id)
+    return avg
 
-    def _remember_cache(self, key: ModelKey, model: Any) -> None:
-        if not self._cache_enabled:
-            return
-        if key in self._cache:
-            self._cache.move_to_end(key)
-        self._cache[key] = model
-        if len(self._cache) > self._max_cache_entries:
-            self._cache.popitem(last=False)
+def train_autocat(user_id):
+    # Placeholder: fit TF-IDF on descriptions
+    from app.core.feature_store import path_for_user
+    path = path_for_user(user_id, "raw_transactions.parquet")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path)
+    # Fit TF-IDF if descriptions exist
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    texts = df["description"].fillna("").tolist()
+    vectorizer = TfidfVectorizer(max_features=1000)
+    vectorizer.fit(texts)
+    save_model("autocat", "v1", {"vectorizer": vectorizer}, user_id)
+    return vectorizer
 
-    def _forget_cache(self, key: ModelKey) -> None:
-        if not self._cache_enabled:
-            return
-        self._cache.pop(key, None)
+def compute_anomaly_stats(user_id):
+    # Placeholder: compute median/MAD per category
+    from app.core.feature_store import path_for_user
+    path = path_for_user(user_id, "raw_transactions.parquet")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path)
+    stats = {}
+    for cat in df["categoryId"].dropna().unique():
+        amounts = df[df["categoryId"] == cat]["amount"].values
+        median = float(pd.Series(amounts).median())
+        mad = float(pd.Series(amounts).mad())
+        stats[cat] = {"median": median, "mad": mad}
+    # Save as JSON
+    out_path = path_for_user(user_id, "anomaly_stats.json")
+    with open(out_path, "w") as f:
+        json.dump(stats, f)
+    return stats
 
-
-_registry_singleton: Optional[ModelRegistry] = None
-
-
-def get_model_registry() -> ModelRegistry:
-    global _registry_singleton
-    if _registry_singleton is None:
-        settings = get_settings()
-        base_dir = Path(settings.AI_MODEL_DIR)
-        _registry_singleton = ModelRegistry(base_dir=base_dir)
-    return _registry_singleton
+def run_async_training(user_id):
+    threading.Thread(target=train_prediction, args=(user_id,), daemon=True).start()
+    threading.Thread(target=train_autocat, args=(user_id,), daemon=True).start()
+    threading.Thread(target=compute_anomaly_stats, args=(user_id,), daemon=True).start()
 

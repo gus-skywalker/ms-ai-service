@@ -11,6 +11,7 @@ from app.features.savings.types import (
     SavingsPlan,
     SavingsAction,
 )
+from app.core.feature_store import UserFinancialDataProvider
 
 SAVINGS_VERSION = "savings_v1"
 logger = logging.getLogger(__name__)
@@ -28,7 +29,16 @@ def generate_savings_recommendations(
             "target_date": request.targetDate,
         },
     )
-
+    provider = UserFinancialDataProvider(user_id)
+    # Tenta buscar dados sincronizados
+    monthly_totals = provider.get_monthly_totals(months=12)
+    if monthly_totals and isinstance(monthly_totals, list) and monthly_totals[0].get("income"):
+        # Pode usar dados reais para ajustar meta e ações
+        last_income = max(monthly_totals[0].get("income", {}).values()) if monthly_totals[0].get("income") else 5000.0
+        last_expenses = max(monthly_totals[0].get("expenses", {}).values()) if monthly_totals[0].get("expenses") else 4200.0
+    else:
+        last_income = 5000.0
+        last_expenses = 4200.0
     goal = request.savingsGoalAmount or 200.0
     target_date = request.targetDate
     today = date.today()

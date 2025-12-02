@@ -12,6 +12,7 @@ from app.features.anomaly.types import (
     AnomalyExpectedRange,
     AnomalyExpense,
 )
+from app.core.feature_store import UserFinancialDataProvider
 from app.utils.preprocessing import filter_user_transactions, filter_by_type
 from app.utils.stats import safe_mean, population_std
 
@@ -36,7 +37,13 @@ def detect_anomalies(
             "transactions": len(request.transactions),
         },
     )
-    transactions = filter_user_transactions(request.transactions, user_id)
+    provider = UserFinancialDataProvider(user_id)
+    # Tenta buscar dados sincronizados
+    user_transactions = provider.get_user_transactions(months=12)
+    if user_transactions:
+        transactions = user_transactions
+    else:
+        transactions = filter_user_transactions(request.transactions, user_id)
     expenses = filter_by_type(transactions, "EXPENSE")
     category_id: Optional[int] = getattr(request, "categoryId", None)
     if category_id is not None:
