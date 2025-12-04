@@ -1,0 +1,34 @@
+{
+  "name": "ai-service",
+  "services": [
+    {
+      "name": "api",
+      "start": "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}",
+      "env": {
+        "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN}",
+        "REDIS_URL": "${REDIS_URL}",
+        "TRAINING_MIN_MONTHS": "6",
+        "TRAINING_MIN_TRANSACTIONS": "100",
+        "TRAINING_MIN_DESCRIPTION_RATIO": "0.5"
+      }
+    },
+    {
+      "name": "worker",
+      "start": "python -m worker.worker",
+      "env": {
+        "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN}",
+        "REDIS_URL": "${REDIS_URL}"
+      }
+    },
+    {
+      "name": "redis",
+      "start": "redis-server --appendonly yes",
+      "env": {}
+    }
+  ],
+  "variables": [
+    { "key": "AI_SERVICE_TOKEN", "value": "replace-with-secure-token", "scope": "global" },
+    { "key": "REDIS_URL", "value": "redis://redis:6379/0", "scope": "global" }
+  ]
+}
+
