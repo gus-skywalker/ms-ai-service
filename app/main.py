@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Depends, Header, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Request, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.core.auth import get_current_user_id, verify_service_token
+from app.core.health import internal_health
 from app.core.sync import handle_sync_request
 from app.core.training_queue import get_job_status, get_last_job_for_user
 from app.features.prediction.service import predict_monthly_expenses
@@ -20,15 +20,15 @@ from app.features.autocat.types import (
     AutoCategorizeRequest,
     AutoCategorizeResponse,
 )
-from app.features.savings.service import generate_savings_recommendations
-from app.features.savings.types import (
-    SavingsRecommendationRequest,
-    SavingsRecommendationResponse,
-)
 from app.features.cashflow.service import get_cashflow_insights
 from app.features.cashflow.types import (
     CashflowInsightsRequest,
     CashflowInsightsResponse,
+)
+from app.features.savings.service import generate_savings_recommendations
+from app.features.savings.types import (
+    SavingsRecommendationRequest,
+    SavingsRecommendationResponse,
 )
 
 app = FastAPI(title="Budget AI Service", version="0.1.0")
@@ -102,9 +102,9 @@ async def training_status(user_id: str, x_service_token: str = Header(None)):
     return {"userId": user_id, "jobId": last_job_id, "status": status}
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/internal/ai/health")
+async def internal_health_endpoint():
+    return internal_health()
 
 
 @app.get('/metrics')

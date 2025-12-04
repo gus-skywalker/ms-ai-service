@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from redis import Redis
 from rq import Queue
 from rq.job import Job, Retry
@@ -16,6 +16,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 QUEUE_NAME = "ai-training"
 _LAST_JOB_KEY = "training:last_job:{user_id}"
 _LOCK_KEY = "training:lock:{user_id}"
+_HEARTBEAT_KEY = "training:worker:heartbeat"
 
 # Initialize connection lazily to allow env changes in tests
 def _get_connection():
@@ -60,13 +61,12 @@ def release_lock(user_id: str):
         logger.exception("failed to release lock", extra={"user_id": user_id})
 
 
-def enqueue_training_job(user_id: str) -> Optional[str]:
-    # Acquire lock to avoid multiple enqueues for same user
+def enqueue_training_job(user_id: str) -> Tuple[Optional[str], bool]:
     try:
         acquired = acquire_lock(user_id)
         if not acquired:
             logger.info("training already queued/running for user", extra={"user_id": user_id})
-            return None
+            return None, True
         # increment metric
         TRAINING_JOBS_TOTAL.inc()
         job = queue.enqueue(
@@ -82,7 +82,7 @@ def enqueue_training_job(user_id: str) -> Optional[str]:
         )
         # persist initial queued status
         persist_training_status(user_id, {"jobId": job.id, "status": "queued", "enqueued_at": datetime.now(timezone.utc).isoformat()})
-        return job.id
+        return job.id, False
     except Exception:
         logger.exception("failed to enqueue training job", extra={"user_id": user_id})
         try:
@@ -95,7 +95,30 @@ def enqueue_training_job(user_id: str) -> Optional[str]:
             release_lock(user_id)
         except Exception:
             pass
-        return None
+        return None, False
+
+
+def ping_redis() -> bool:
+    try:
+        return _connection.ping()
+    except Exception:
+        logger.exception("redis ping failed")
+        return False
+
+
+def worker_heartbeat_ok() -> bool:
+    try:
+        return _connection.exists(_HEARTBEAT_KEY) == 1
+    except Exception:
+        logger.exception("worker heartbeat check failed")
+        return False
+
+
+def set_worker_heartbeat():
+    try:
+        _connection.set(_HEARTBEAT_KEY, "1", ex=10)
+    except Exception:
+        logger.exception("failed to update worker heartbeat")
 
 
 def get_job_status(job_id: str) -> Optional[dict]:

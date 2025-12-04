@@ -81,6 +81,10 @@ All public endpoints use JWT auth to get `user_id` (via `app.core.auth.get_curre
 
 - GET `/internal/ai/user/{userId}/training-status` (X-Service-Token required) — returns last job id and RQ job status.
 
+- GET `/internal/ai/health`
+  - Purpose: verify Redis and worker heartbeat
+  - Response: `{ "redis": "ok", "worker": "ok" }`
+
 ---
 
 ## Feature store layout (local)
@@ -124,6 +128,56 @@ B) Message broker (recommended at scale)
 - This decouples systems and handles spikes better.
 
 Important: Do not rely solely on immediate training completion — training is performed asynchronously (RQ worker). Use `training_status.json` or training-status endpoint for readiness.
+
+---
+
+## API docs (sync + status)
+- `POST /internal/ai/sync-user-data`
+  - Header: `X-Service-Token: <token>`
+  - Body: same payload as above example (rawTransactions + monthlyAggregates)
+  - Response: `{
+      "status": "accepted",
+      "userId": "123",
+      "lastSync": "...",
+      "queued": true|false,
+      "jobId": "..."|null,
+      "alreadyRunning": true|false
+    }`
+  - Retry pattern: if `queued` is false and `alreadyRunning` is false, wait and re-POST after 30s (idempotent). If `alreadyRunning` is true, skip until job finishes.
+- `GET /internal/ai/user/{userId}/training-status`
+  - Header: `X-Service-Token`
+  - Response: `{
+      "userId": "123",
+      "jobId": "job-123",
+      "status": { ... RQ job structure ... }
+    }`
+  - Use this to poll for readiness and to detect failure states before resubmitting sync.
+
+## Railway deployment
+
+Example `railway.json` config:
+
+```json
+{
+  "build": {
+    "env": {
+      "AI_SERVICE_TOKEN": "your_token",
+      "REDIS_URL": "redis://default:password@redis-12345.c250.us-east-1-4.ec2.cloud.redislabs.com:12345"
+    }
+  }
+}
+```
+
+- Services:
+  - api: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
+  - worker: `python -m worker.worker`
+  - redis: official redis image
+- Shared env vars:
+  - `AI_SERVICE_TOKEN`
+  - `REDIS_URL`
+  - Optional thresholds: `TRAINING_*`
+- Worker must run in Railway `worker` service with same env.
+- Add `Procfile` or Railway service settings accordingly.
 
 ---
 
@@ -212,3 +266,4 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 4. When adding new features, follow existing service patterns and types in `app/features/*`.
 
 ---
+
