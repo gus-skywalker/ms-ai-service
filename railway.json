@@ -1,4 +1,5 @@
 {
+  "$schema": "https://railway.com/railway.schema.json",
   "name": "ai-service",
   "services": [
     {
@@ -19,16 +20,10 @@
         "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN}",
         "REDIS_URL": "${REDIS_URL}"
       }
-    },
-    {
-      "name": "redis",
-      "start": "redis-server --appendonly yes",
-      "env": {}
     }
   ],
   "variables": [
-    { "key": "AI_SERVICE_TOKEN", "value": "replace-with-secure-token", "scope": "global" },
-    { "key": "REDIS_URL", "value": "redis://redis:6379/0", "scope": "global" }
+    { "key": "AI_SERVICE_TOKEN", "value": "", "scope": "global" },
+    { "key": "REDIS_URL", "value": "", "scope": "global" }
   ]
 }
-
