@@ -2,7 +2,6 @@ import os
 import json
 import joblib
 from typing import Optional
-from pathlib import Path
 
 MODEL_BASE_PATH = "models"
 
@@ -37,6 +36,12 @@ class ModelRegistry:
 
     def get_model_path(self, key: ModelKey):
         return os.path.join(key.path(), "model.joblib")
+
+    def delete_model(self, key: ModelKey):
+        path = key.path()
+        if os.path.isdir(path):
+            import shutil
+            shutil.rmtree(path)
 
 _registry = ModelRegistry()
 

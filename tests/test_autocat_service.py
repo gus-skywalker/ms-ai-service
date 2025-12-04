@@ -106,13 +106,9 @@ def test_fallback_on_corrupted_model(monkeypatch, tmp_path):
         assert s.suggestedCategory.id in {5, 6}
 
     # Simular modelo corrompido: deletar modelo e histórico
-    import shutil
     from app.features.autocat import service as autocat_service
     from app.core.models_registry import get_model_registry, ModelKey
 
-    model_dir = Path(os.getenv("AI_MODEL_DIR")) / "autocat" / "autocat_v1" / user_id
-    if model_dir.exists():
-        shutil.rmtree(model_dir)
 
     registry = get_model_registry()
     key = ModelKey(feature="autocat", version="autocat_v1", user_id=user_id)

@@ -1,7 +1,10 @@
 from fastapi import FastAPI, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.core.auth import get_current_user_id, verify_service_token
 from app.core.sync import handle_sync_request
+from app.core.training_queue import get_job_status, get_last_job_for_user
 from app.features.prediction.service import predict_monthly_expenses
 from app.features.prediction.types import (
     MonthlyExpensesPredictionRequest,
@@ -90,8 +93,23 @@ async def sync_user_data(request: Request, x_service_token: str = Header(None)):
     return result
 
 
+@app.get("/internal/ai/user/{user_id}/training-status")
+async def training_status(user_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    last_job_id = get_last_job_for_user(user_id)
+    status = get_job_status(last_job_id) if last_job_id else None
+    return {"userId": user_id, "jobId": last_job_id, "status": status}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get('/metrics')
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 # How To Use
 # uvicorn app.main:app --reload

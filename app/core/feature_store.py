@@ -8,6 +8,11 @@ STORAGE_PATH = "storage/user_data"
 def path_for_user(user_id: str, filename: str) -> str:
     return os.path.join(STORAGE_PATH, str(user_id), filename)
 
+def _ensure_parent(path: str):
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+
 def save_user_data(user_id, raw_transactions, monthly_aggregates, mode, sync_type):
     user_dir = os.path.join(STORAGE_PATH, str(user_id))
     os.makedirs(user_dir, exist_ok=True)
@@ -29,17 +34,23 @@ def save_user_data(user_id, raw_transactions, monthly_aggregates, mode, sync_typ
         if mode == "incremental" and existing_df is not None:
             # Remove duplicadas pelo transactionId
             df = pd.concat([existing_df, df]).drop_duplicates(subset=["transactionId"], keep="last")
-        df.to_parquet(path_for_user(user_id, "raw_transactions.parquet"))
+        raw_path = path_for_user(user_id, "raw_transactions.parquet")
+        _ensure_parent(raw_path)
+        df.to_parquet(raw_path)
     elif mode == "incremental" and existing_df is not None:
-        # Só deletou, salva o existente filtrado
-        existing_df.to_parquet(path_for_user(user_id, "raw_transactions.parquet"))
+        existing_path = path_for_user(user_id, "raw_transactions.parquet")
+        _ensure_parent(existing_path)
+        existing_df.to_parquet(existing_path)
     if monthly_aggregates:
         df = pd.DataFrame([monthly_aggregates])
-        df.to_parquet(path_for_user(user_id, "monthly_series.parquet"))
+        monthly_path = path_for_user(user_id, "monthly_series.parquet")
+        _ensure_parent(monthly_path)
+        df.to_parquet(monthly_path)
 
 def update_metadata(user_id, timestamp):
     meta_path = path_for_user(user_id, "metadata.json")
     meta = {"last_sync": timestamp}
+    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
     with open(meta_path, "w") as f:
         json.dump(meta, f)
 

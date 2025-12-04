@@ -8,3 +8,7 @@ numpy
 pandas
 scikit-learn
 pyarrow
+redis
+rq
+fakeredis
+prometheus_client
