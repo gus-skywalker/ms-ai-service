@@ -6,6 +6,16 @@ from pydantic import BaseModel, Field, ConfigDict
 from uuid import uuid4
 
 
+def _generate_correlation_id() -> str:
+    """Generate a unique correlation ID for event tracing."""
+    return str(uuid4())
+
+
+def _generate_timestamp() -> str:
+    """Generate an ISO 8601 timestamp in UTC."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 class BaseEvent(BaseModel):
     """Base class for all domain events.
     
@@ -20,11 +30,11 @@ class BaseEvent(BaseModel):
     
     eventVersion: str = Field(description="Event schema version")
     correlationId: str = Field(
-        default_factory=lambda: str(uuid4()),
+        default_factory=_generate_correlation_id,
         description="Correlation ID for request tracing"
     )
     actor: str = Field(description="Actor who triggered the event (user ID or system ID)")
     timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+        default_factory=_generate_timestamp,
         description="ISO 8601 timestamp when event occurred"
     )

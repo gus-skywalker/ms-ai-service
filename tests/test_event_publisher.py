@@ -2,8 +2,9 @@
 
 import pytest
 from datetime import datetime, timezone
+from pydantic import ValidationError
 from app.events.membership_events import MembershipCreated
-from app.events.publisher import EventPublisher, EVENTS_STREAM, PROCESSED_EVENTS_KEY
+from app.events.publisher import EventPublisher, EVENTS_STREAM, PROCESSED_EVENTS_KEY, IDEMPOTENCY_TTL_SECONDS
 from fakeredis import FakeStrictRedis
 
 
@@ -81,7 +82,7 @@ class TestMembershipCreatedEvent:
             actor="user-456"
         )
         
-        with pytest.raises(Exception):  # ValidationError or AttributeError
+        with pytest.raises((ValidationError, AttributeError)):
             event.membershipId = "different-id"
     
     def test_event_contains_no_pii(self):
@@ -201,10 +202,10 @@ class TestEventPublisher:
         key = PROCESSED_EVENTS_KEY.format(event_id=event.correlationId)
         assert redis_connection.exists(key) == 1
         
-        # Check TTL is set (7 days = 604800 seconds)
+        # Check TTL is set using the constant
         ttl = redis_connection.ttl(key)
         assert ttl > 0
-        assert ttl <= 7 * 24 * 3600
+        assert ttl <= IDEMPOTENCY_TTL_SECONDS
     
     def test_different_correlation_ids_publish_successfully(self, publisher, redis_connection):
         """Events with different correlationIds should both be published."""

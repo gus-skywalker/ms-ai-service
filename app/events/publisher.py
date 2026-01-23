@@ -19,6 +19,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 EVENTS_STREAM = "domain:events"
 PROCESSED_EVENTS_KEY = "events:processed:{event_id}"
 
+# Configuration constants
+STREAM_MAX_LENGTH = int(os.getenv("EVENTS_STREAM_MAX_LENGTH", "10000"))
+IDEMPOTENCY_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 class EventPublisher:
     """Publisher for domain events.
@@ -89,13 +93,13 @@ class EventPublisher:
             message_id = self._connection.xadd(
                 EVENTS_STREAM,
                 stream_message,
-                maxlen=10000  # Keep last 10k events (configurable)
+                maxlen=STREAM_MAX_LENGTH
             )
             
-            # Mark as processed (TTL 7 days for idempotency check)
+            # Mark as processed (TTL for idempotency check)
             self._connection.setex(
                 event_id_key,
-                7 * 24 * 3600,  # 7 days
+                IDEMPOTENCY_TTL_SECONDS,
                 message_id.decode() if isinstance(message_id, bytes) else message_id
             )
             
