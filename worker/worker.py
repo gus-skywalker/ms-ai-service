@@ -2,7 +2,6 @@ import os
 import logging
 import platform
 import threading
-import time
 from redis import Redis
 import rq
 from rq import Worker

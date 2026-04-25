@@ -49,6 +49,3 @@ Drivers de persistência: `app/core/models_registry.py` usa joblib/pickle para e
 ## Documentação adicional a entregar
 - Cada funcionalidade precisa de um bloco no backlog/lista de tarefas: `docs/feature-roadmap.md` (este arquivo). Reutilize-o para planejar melhorias e atualize conforme você fizer deploys.
 - Mantenha o `README.md` atualizado com endpoints e o `railway.json` para deploy.
-
-Quer que eu gere também tickets ou GH issues baseados nesse roadmap?.netbeans? ophalen?_invalid?  
-
