@@ -22,6 +22,7 @@ Drivers de persistência: `app/core/models_registry.py` usa joblib/pickle para e
 ### 2. Autocat
 - **Necessidade:** fallback para vocabulários limitados; a função atual só salva o vectorizer. Planejar `textEmbedding` ou boosting.
 - **Melhoria curta:** adicionar `model_metadata.json` com tamanho do vocabulário e data de treino; se o vocabulário for menor que 5, registrar alerta (evita sempre 1 categoria). Semana 1.
+- **Contrato de segurança:** substituir fallback para categoria fixa (`miscellaneous`/`Outros`, id `14`) por abstention/unknown. O `budget-api` já filtra esse fallback como não aplicável, mas o `ai-service` também deve parar de emitir categoria genérica quando o modelo falha, recebe descrição vazia ou tem histórico insuficiente.
 - **Longo prazo:** treinar modelo supervisionado com anotações e salvar `model.joblib`. Necessita de dataset rotulado. 1 mês.
 
 ### 3. Anomaly
