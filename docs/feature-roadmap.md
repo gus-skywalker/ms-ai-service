@@ -22,7 +22,8 @@ Drivers de persistência: `app/core/models_registry.py` usa joblib/pickle para e
 ### 2. Autocat
 - **Necessidade:** fallback para vocabulários limitados; a função atual só salva o vectorizer. Planejar `textEmbedding` ou boosting.
 - **Melhoria curta:** adicionar `model_metadata.json` com tamanho do vocabulário e data de treino; se o vocabulário for menor que 5, registrar alerta (evita sempre 1 categoria). Semana 1.
-- **Contrato de segurança:** substituir fallback para categoria fixa (`miscellaneous`/`Outros`, id `14`) por abstention/unknown. O `budget-api` já filtra esse fallback como não aplicável, mas o `ai-service` também deve parar de emitir categoria genérica quando o modelo falha, recebe descrição vazia ou tem histórico insuficiente.
+- **Contrato de segurança:** substituir fallback para categoria fixa (`miscellaneous`/`Outros`, id `14`) por abstention explícita (`NO_SUGGESTION`). O `budget-api` já filtra esse fallback como não aplicável, mas o `ai-service` também deve parar de emitir categoria genérica quando o modelo falha, recebe descrição vazia ou tem histórico insuficiente.
+- **Próxima prioridade de produto:** persistir identidade e ciclo de vida de sugestão (`suggestionId`, `status`, aceite, rejeição, substituição, expiração) para criar baseline de aprendizado.
 - **Longo prazo:** treinar modelo supervisionado com anotações e salvar `model.joblib`. Necessita de dataset rotulado. 1 mês.
 
 ### 3. Anomaly
@@ -43,9 +44,10 @@ Drivers de persistência: `app/core/models_registry.py` usa joblib/pickle para e
 
 ## Prioridades recomendadas
 1. **Documentar e monitorar** — finalize este roadmap, garantir `training_status.json` enriquecido, e criar alertas no Railway via `/internal/ai/health` e `/metrics`. Já coberto parcialmente.
-2. **Persistir metadados** — `models/.../meta.json` para prediction/autocat; `training_status.json` inclui campo `modelVersion`, `modelPath`, `metrics`. Desdobramento: atualize `app/core/trainers.py` para escrever meta (exemplo: append to persisted JSON). 2–3 dias.
-3. **Productize cashflow/savings** — persistir cálculos + treinar regressões/lógicas mais robustas; planejar para sprint 2.
-4. **Integrar retraining monitor** — `app/core/training_queue.py` já registra job status; adicionar cron job/endpoint para re-enfileirar usuários com dados novos (futuro). 2 semanas.
+2. **Persistir feedback de categorização** — criar registro de sugestão, aceitar/rejeitar/substituir com `suggestionId`, e só depois enriquecer o DTO explicativo. 2–3 dias.
+3. **Persistir metadados** — `models/.../meta.json` para prediction/autocat; `training_status.json` inclui campo `modelVersion`, `modelPath`, `metrics`. Desdobramento: atualize `app/core/trainers.py` para escrever meta (exemplo: append to persisted JSON). 2–3 dias.
+4. **Productize cashflow/savings** — persistir cálculos + treinar regressões/lógicas mais robustas; planejar para sprint 2.
+5. **Integrar retraining monitor** — `app/core/training_queue.py` já registra job status; adicionar cron job/endpoint para re-enfileirar usuários com dados novos (futuro). 2 semanas.
 
 ## Documentação adicional a entregar
 - Cada funcionalidade precisa de um bloco no backlog/lista de tarefas: `docs/feature-roadmap.md` (este arquivo). Reutilize-o para planejar melhorias e atualize conforme você fizer deploys.
