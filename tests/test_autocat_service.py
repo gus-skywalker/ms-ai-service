@@ -2,8 +2,10 @@ import os
 from pathlib import Path
 import re
 
+import pandas as pd
 import pytest
 
+from app.core.feature_store import path_for_user
 from app.features.autocat.service import auto_categorize_expenses
 from app.features.autocat.types import AutoCategorizeRequest, AutoCategorizeRequestItem
 from app.models.transactions import AiTransaction
@@ -163,6 +165,40 @@ def test_seed_sized_history_trains_and_boosts_with_similarity(monkeypatch):
     assert response.suggestions[1].suggestedCategory.id == 2
     assert all(s.suggestedCategory.confidence > 0.5 for s in response.suggestions)
     assert all("historical-similarity" in s.reasoning for s in response.suggestions)
+
+
+def test_parquet_timestamp_history_is_normalized(monkeypatch):
+    user_id = "user-parquet-history"
+    records = [
+        {
+            "transactionId": f"hist-{idx}",
+            "userId": user_id,
+            "type": "EXPENSE",
+            "date": pd.Timestamp("2026-07-15"),
+            "amount": 50 + idx,
+            "currency": "BRL",
+            "categoryId": 1 if idx < 11 else 2,
+            "description": f"Descricao categoria {1 if idx < 11 else 2} item {idx}",
+        }
+        for idx in range(22)
+    ]
+    path = Path(path_for_user(user_id, "raw_transactions.parquet"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(records).to_parquet(path)
+
+    request = AutoCategorizeRequest(
+        expenses=[
+            AutoCategorizeRequestItem(
+                expenseId="req-timestamp",
+                description="Descricao categoria 1 nova",
+                amount=80,
+                paymentMethodId=1,
+            )
+        ]
+    )
+    response = auto_categorize_expenses(user_id, request)
+
+    assert response.suggestions[0].reasoning != "model-error"
 
 
 def test_alternative_categories(monkeypatch):

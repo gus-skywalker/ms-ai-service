@@ -68,6 +68,8 @@ class UserFinancialDataProvider:
             df["date"] = pd.to_datetime(df["date"])
             cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
             df = df[df["date"] >= cutoff]
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
         return df.to_dict("records")
     def get_monthly_totals(self, months: Optional[int] = None):
         path = path_for_user(self.user_id, "monthly_series.parquet")
