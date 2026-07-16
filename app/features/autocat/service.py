@@ -29,10 +29,15 @@ from app.models.transactions import AiTransaction
 logger = logging.getLogger(__name__)
 
 AUTOCAT_VERSION = "autocat_v1"
-MIN_TRAIN_TXS = 20
+MIN_TRAIN_TXS = 21
+MIN_TRAIN_CLASSES = 2
 MAX_ALTERNATIVES = 3
 INSUFFICIENT_HISTORY_REASON = "insufficient-history"
 MODEL_ERROR_REASON = "model-error"
+PORTUGUESE_STOPWORDS = [
+    "a", "ao", "aos", "as", "com", "da", "das", "de", "do", "dos", "e",
+    "em", "na", "nas", "no", "nos", "o", "os", "para", "por", "um", "uma",
+]
 
 _HISTORY_STORE: Dict[str, List[AiTransaction]] = {}
 _CORRUPT_SENTINEL = {"corrupt": True}
@@ -71,13 +76,14 @@ def auto_categorize_expenses(
         history = get_user_labeled_history(user_id)
         history_records = _extract_history_records(history)
         request_records = _extract_request_records(request.expenses)
-        # Novo cálculo compatível com os testes
-        total_records = len(history_records) + len(request.expenses)
         training_records = history_records + request_records
+        labeled_train_count = len(training_records)
 
-        model_bundle = _maybe_train_and_load(user_id, training_records, total_records)
-        if not model_bundle or model_bundle == _CORRUPT_SENTINEL:
+        model_bundle = _maybe_train_and_load(user_id, training_records, labeled_train_count)
+        if model_bundle == _CORRUPT_SENTINEL:
             return _fallback_response(request.expenses, MODEL_ERROR_REASON)
+        if not model_bundle:
+            return _fallback_response(request.expenses, INSUFFICIENT_HISTORY_REASON)
 
         suggestions = _predict_with_model(
             user_id=user_id,
@@ -175,11 +181,15 @@ def _train_and_save_model(
     total_records: int,
 ):
     if not records or len(records) < MIN_TRAIN_TXS:
+        logger.info(
+            "autocat training postponed: not enough labeled transactions",
+            extra={"user_id": user_id, "labeled_records": len(records), "min_train_txs": MIN_TRAIN_TXS},
+        )
         return None
 
     texts = [_clean_text(r["description"]) for r in records]
     categories = [r["categoryId"] for r in records]
-    if len(set(categories)) < 2:
+    if len(set(categories)) < MIN_TRAIN_CLASSES:
         logger.warning(
             "autocat training aborted: only one class present",
             extra={"user_id": user_id, "labels": list(set(categories))},
@@ -203,7 +213,7 @@ def _train_and_save_model(
     label_encoder = LabelEncoder()
     y_enc = label_encoder.fit_transform(categories)
 
-    model = LogisticRegression(max_iter=200)
+    model = LogisticRegression(max_iter=500, class_weight="balanced", solver="liblinear")
     try:
         model.fit(feature_matrix, y_enc)
     except Exception:
@@ -213,6 +223,11 @@ def _train_and_save_model(
     train_accuracy = float(model.score(feature_matrix, y_enc))
     vocab_size = len(vectorizer.vocabulary_)
     detected_classes = sorted(set(categories))
+    training_examples = [
+        {"text": text, "categoryId": int(category)}
+        for text, category in zip(texts, categories)
+        if text != "<empty>"
+    ][:500]
 
     logger.debug(
         "autocat training summary",
@@ -226,9 +241,11 @@ def _train_and_save_model(
     )
 
     stats = {
-        "n_train": total_records,  # exatamente o que os testes esperam
+        "n_train": total_records,
         "classes": detected_classes,
         "train_accuracy": train_accuracy,
+        "min_train_txs": MIN_TRAIN_TXS,
+        "training_examples": training_examples,
     }
     return model, vectorizer, label_encoder, amount_stats, stats
 
@@ -292,13 +309,13 @@ def _load_bundle_from_payload(user_id: str, payload: Optional[Dict[str, Any]]):
 
 def _fit_vectorizer(texts: Sequence[str], user_id: str):
     params = dict(max_features=1000, min_df=1, ngram_range=(1, 2))
-    for stopwords in ("portuguese", None):
+    for stopwords in (PORTUGUESE_STOPWORDS, None):
         vectorizer = TfidfVectorizer(stop_words=stopwords, **params)
         try:
             matrix = vectorizer.fit_transform(texts)
             if matrix.shape[1] == 0:
                 raise ValueError("empty vocabulary")
-            return vectorizer, matrix, stopwords or "none"
+            return vectorizer, matrix, "pt-lite" if stopwords else "none"
         except ValueError:
             logger.warning(
                 "autocat empty vocabulary during training",
@@ -357,7 +374,16 @@ def _predict_with_model(
 
         cat_id = int(label_encoder.inverse_transform([pred_encoded])[0])
         confidence = float(np.max(proba)) if proba is not None else None
+        cat_id, confidence, similarity_reason = _apply_historical_similarity_boost(
+            desc=desc,
+            predicted_category_id=cat_id,
+            confidence=confidence if confidence is not None else 0.0,
+            vectorizer=vectorizer,
+            stats=stats,
+        )
         reasoning = f"{stats.get('n_train', 0)} transações"
+        if similarity_reason:
+            reasoning = f"{reasoning}; {similarity_reason}"
 
         alternatives = _build_alternative_categories(
             proba=proba,
@@ -380,6 +406,41 @@ def _predict_with_model(
         )
 
     return suggestions
+
+
+def _apply_historical_similarity_boost(
+    desc: str,
+    predicted_category_id: int,
+    confidence: float,
+    vectorizer: TfidfVectorizer,
+    stats: Dict[str, Any],
+) -> tuple[int, float, Optional[str]]:
+    examples = stats.get("training_examples") or []
+    if not examples:
+        return predicted_category_id, confidence, None
+
+    texts = [example["text"] for example in examples if example.get("text")]
+    if not texts:
+        return predicted_category_id, confidence, None
+
+    try:
+        request_vec = vectorizer.transform([desc])
+        history_vec = vectorizer.transform(texts)
+        similarities = (history_vec @ request_vec.T).toarray().ravel()
+    except Exception:
+        return predicted_category_id, confidence, None
+
+    if similarities.size == 0:
+        return predicted_category_id, confidence, None
+
+    best_idx = int(np.argmax(similarities))
+    best_similarity = float(similarities[best_idx])
+    if best_similarity < 0.30:
+        return predicted_category_id, confidence, None
+
+    best_category_id = int(examples[best_idx]["categoryId"])
+    boosted_confidence = min(0.95, max(confidence, 0.55 + (0.40 * best_similarity)))
+    return best_category_id, boosted_confidence, "historical-similarity"
 
 
 def _build_alternative_categories(
@@ -420,7 +481,7 @@ def _extract_history_records(history: Sequence[AiTransaction]) -> List[Dict[str,
         records.append(
             {
                 "description": tx.description or "",
-                "categoryId": tx.categoryId,
+                "categoryId": int(tx.categoryId),
                 "amount": tx.amount or 0.0,
             }
         )
@@ -435,7 +496,7 @@ def _extract_request_records(expenses: Sequence[AutoCategorizeRequestItem]) -> L
         records.append(
             {
                 "description": exp.description or "",
-                "categoryId": exp.categoryId,
+                "categoryId": int(exp.categoryId),
                 "amount": exp.amount or 0.0,
             }
         )
