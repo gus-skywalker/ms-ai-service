@@ -202,10 +202,16 @@ docker run --rm -p 6379:6379 redis:7
 
 3. Start API
 ```bash
+cp .env.example .env
 export REDIS_URL=redis://localhost:6379/0
 export AI_SERVICE_TOKEN=testtoken
 uvicorn app.main:app --reload
 ```
+
+For CoBudget local development, keep `AI_SERVICE_TOKEN` equal to the `budget-api`
+`AI_SERVICE_TOKEN` value. The default local pair is `testtoken` on both sides.
+The public AI endpoints validate JWTs against `AUTH_SERVER_URL`, which defaults
+to the local auth service at `http://localhost:9000`.
 
 4. Start worker (in another terminal)
 ```bash
@@ -266,4 +272,3 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 4. When adding new features, follow existing service patterns and types in `app/features/*`.
 
 ---
-

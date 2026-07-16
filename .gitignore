@@ -136,6 +136,9 @@ celerybeat.pid
 *.aof
 *.pid
 
+# Local AI feature-store data
+storage/
+
 # RabbitMQ
 mnesia/
 rabbitmq/
@@ -214,3 +217,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.idea/workspace.xml

@@ -11,8 +11,12 @@ _http_bearer = HTTPBearer(auto_error=True)
 _jwks_cache: Optional[dict] = None
 
 def verify_service_token(token: str) -> bool:
-    expected = os.getenv("AI_SERVICE_TOKEN")
-    return token is not None and token == expected
+    if token is None:
+        return False
+    expected = os.getenv("AI_SERVICE_TOKEN") or get_settings().AI_SERVICE_TOKEN
+    if expected is None or expected.strip() == "":
+        return False
+    return token.strip() == expected.strip()
 
 async def _fetch_jwks() -> dict:
     global _jwks_cache

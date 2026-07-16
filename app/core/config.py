@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     JWT_JWKS_PATH: str = "/oauth2/jwks"
     JWT_ALGORITHM: str = "RS256"
     JWT_AUDIENCE: Optional[str] = None
+    AI_SERVICE_TOKEN: Optional[str] = "testtoken"
     AI_MODEL_DIR: str = "./models"
 
     model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -3,8 +3,6 @@ import json
 import joblib
 from typing import Optional
 
-MODEL_BASE_PATH = "models"
-
 class ModelKey:
     def __init__(self, feature: str, version: str, user_id: Optional[str] = None):
         self.feature = feature
@@ -12,7 +10,9 @@ class ModelKey:
         self.user_id = user_id
 
     def path(self):
-        parts = [MODEL_BASE_PATH, self.feature, self.version]
+        from app.core.config import get_settings
+
+        parts = [get_settings().AI_MODEL_DIR, self.feature, self.version]
         if self.user_id:
             parts.append(str(self.user_id))
         return os.path.join(*parts)
