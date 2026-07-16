@@ -64,6 +64,18 @@ async def auto_categorize(
     return auto_categorize_expenses(user_id=user_id, request=req)
 
 
+@app.post("/internal/ai/auto-categorize", response_model=AutoCategorizeResponse)
+async def internal_auto_categorize(
+    req: AutoCategorizeRequest,
+    x_service_token: str = Header(None),
+) -> AutoCategorizeResponse:
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not req.userId:
+        raise HTTPException(status_code=400, detail="userId is required")
+    return auto_categorize_expenses(user_id=req.userId, request=req)
+
+
 # ---- 4) Savings recommendations ----
 
 @app.post("/api/v1/ai/savings-recommendations", response_model=SavingsRecommendationResponse)

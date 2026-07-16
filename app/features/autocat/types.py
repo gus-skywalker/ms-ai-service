@@ -28,6 +28,7 @@ class AutoCategorizeRequestItem(BaseModel):
 
 
 class AutoCategorizeRequest(BaseModel):
+    userId: Optional[str] = None
     expenses: List[AutoCategorizeRequestItem]
 
 
