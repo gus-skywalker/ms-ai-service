@@ -19,6 +19,9 @@ class MonthlyExpensePredictionItem(BaseModel):
 
 
 class MonthlyExpensesPredictionRequest(BaseModel):
+    workspaceId: Optional[str] = None
+    actorUserId: Optional[str] = None
+    requestId: Optional[str] = None
     categoryId: Optional[int]
     forecastMonths: int = 3
     historicalTransactions: List[AiTransaction]

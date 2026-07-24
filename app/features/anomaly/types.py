@@ -40,6 +40,9 @@ class AnomalyDetectionSummary(BaseModel):
 
 
 class AnomalyDetectionRequest(BaseModel):
+    workspaceId: Optional[str] = None
+    actorUserId: Optional[str] = None
+    requestId: Optional[str] = None
     transactions: List[AiTransaction]
     sensitivity: Optional[float] = 1.5
 

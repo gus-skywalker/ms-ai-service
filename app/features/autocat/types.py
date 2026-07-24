@@ -28,6 +28,9 @@ class AutoCategorizeRequestItem(BaseModel):
 
 
 class AutoCategorizeRequest(BaseModel):
+    workspaceId: Optional[str] = None
+    actorUserId: Optional[str] = None
+    requestId: Optional[str] = None
     userId: Optional[str] = None
     expenses: List[AutoCategorizeRequestItem]
 

@@ -11,8 +11,8 @@ This README documents the main features, architecture, internal flows (sync & fe
 - Language: Python 3.x (project uses 3.9 in CI/dev)
 - Framework: FastAPI
 - Queue/worker: Redis + RQ (queue `ai-training`) — worker entrypoint: `worker/worker.py`
-- Feature store: local filesystem under `storage/user_data/{userId}` (parquet/json)
-- Models: persisted under `models/{feature}/{version}/{userId}` (joblib)
+- Feature store: local filesystem under the legacy physical path `storage/user_data/{workspaceId}` (parquet/json)
+- Models: persisted under `models/{feature}/{version}/{workspaceId}` (joblib)
 - Tests: PyTest (fakeredis used for queue tests)
 
 ---
@@ -20,25 +20,25 @@ This README documents the main features, architecture, internal flows (sync & fe
 ## Core concepts
 
 1. Feature Store
-   - `storage/user_data/{userId}/` holds preprocessed artifacts (raw_transactions.parquet, monthly_series.parquet, categories_stats.json, anomaly_stats.json, training_status.json, metadata.json)
+   - `storage/user_data/{workspaceId}/` holds derived artifacts. The directory name is retained for artifact compatibility; the partition key is a workspace, not a user.
    - Helpers: `app/core/feature_store.py` — `path_for_user`, `save_user_data`, `UserFinancialDataProvider`.
 
 2. Sync Endpoint (internal)
    - POST `/internal/ai/sync-user-data`
-   - Auth: `X-Service-Token: <SECRET>` (or Bearer header) — validated by `app.core.auth.verify_service_token`
-   - Payload: supports `rawTransactions` (full list) and `monthlyAggregates` (lighter aggregation). `mode` can be `full` or `incremental`.
+   - Auth: `X-Service-Token: <SECRET>` — validated by `app.core.auth.verify_service_token`
+   - Payload: contract v1 uses `workspaceId`, separate `transactions`/`labels`/`feedback`, deterministic `syncId`, and `FULL` or `INCREMENTAL`. Legacy `userId`/`rawTransactions` remain accepted only for migration.
    - Behavior: validates, writes feature store files, updates metadata, checks eligibility and enqueues training job (RQ) if eligible.
 
 3. Training queue
    - Redis URL: `REDIS_URL` (env)
    - Queue name: `ai-training`
    - Helper: `app/core/training_queue.py` — `enqueue_training_job`, `get_job_status`, `persist_training_status`, `acquire_lock`/`release_lock`.
-   - Per-user lock: prevents concurrent training for the same user (Redis key `training:lock:{userId}`).
+   - Per-workspace lock: prevents concurrent training for the same workspace. Redis keys retain legacy naming internally.
 
 4. Trainers & Models
    - Trainer entrypoint: `app/core/trainers.py` (functions: `run_all_trainers`, `train_prediction`, `train_autocat`, `compute_anomaly_stats`)
-   - Models saved via `app/core/models_registry.py` into `models/{feature}/{version}/{userId}/model.joblib`
-   - On train start/finish/failure the system persists `storage/user_data/{userId}/training_status.json` so other services (Java) can read model readiness without Redis dependency.
+   - Models are saved via `app/core/models_registry.py` into `models/{feature}/{version}/{workspaceId}/model.joblib`.
+   - On train start/finish/failure the system persists `storage/user_data/{workspaceId}/training_status.json`.
 
 5. Worker
    - `worker/worker.py` starts an RQ worker — on macOS uses `SimpleWorker` to avoid `fork()`+ObjectiveC issues.
@@ -58,28 +58,47 @@ This README documents the main features, architecture, internal flows (sync & fe
 - POST `/api/v1/ai/cashflow-insights` — Uses `cashflow` service.
 
 All public endpoints use JWT auth to get `user_id` (via `app.core.auth.get_current_user_id`) and expect request bodies defined in `app/features/*/types.py`.
+They are compatibility endpoints and are not used by the official CoBudget frontend/backend flow.
 
 ---
 
 ## Internal API (for backend integration)
 
+All endpoints below require `X-Service-Token`. Inference requests require
+`workspaceId`; `actorUserId` and `requestId` are correlation/audit context and
+never select a feature partition.
+
+- POST `/internal/ai/monthly-expenses-prediction`
+- POST `/internal/ai/anomaly-detection`
+- POST `/internal/ai/auto-categorize`
+- POST `/internal/ai/savings-recommendations`
+- POST `/internal/ai/cashflow-insights`
+
 - POST `/internal/ai/sync-user-data` (X-Service-Token or internal Bearer token)
-  - Used by `budget-api` to push raw or aggregated user data.
+  - Used by `budget-api` to push raw or aggregated workspace data.
   - Example payload:
   ```json
   {
-    "userId": "123",
-    "mode": "full",              
-    "rawTransactions": [{"transactionId": "t1", "date": "2025-11-01", "amount": -35.5, "type": "EXPENSE", "categoryId": 10, "description": "Uber"}],
+    "schemaVersion": 1,
+    "workspaceId": "workspace-123",
+    "actorUserId": "user-123",
+    "requestId": "request-123",
+    "syncId": "sync-123",
+    "mode": "FULL",
+    "reason": "BACKFILL",
+    "transactions": [{"transactionId": "t1", "entryId": "e1", "date": "2025-11-01", "amount": 35.5, "type": "EXPENSE", "categoryId": 10, "description": "Uber"}],
+    "labels": [{"labelId": "t1:e1", "transactionId": "t1", "entryId": "e1", "categoryId": 10, "labelSource": "USER", "trust": 1.0}],
+    "feedback": [{"feedbackId": "f1", "eventType": "SUGGESTION_ACCEPTED", "transactionId": "t1"}],
     "monthlyAggregates": {"income": {"2025-01": 5000.0}, "expenses": {"2025-01": 4200.0}},
     "syncType": "full",
     "source": "budget-api",
     "timestamp": "2025-12-02T15:00:00Z"
   }
   ```
-  - Response (accepted): `{ status: "accepted", userId: "123", lastSync: "...", queued: true|false, jobId: null|"..." }`
+  - Response: `{ status: "accepted"|"duplicate", workspaceId: "workspace-123", syncId: "sync-123", lastSync: "...", queued: true|false, jobId: null|"..." }`
 
-- GET `/internal/ai/user/{userId}/training-status` (X-Service-Token required) — returns last job id and RQ job status.
+- GET `/internal/ai/workspace/{workspaceId}/training-status` — canonical training status endpoint.
+- GET `/internal/ai/user/{userId}/training-status` — legacy compatibility alias.
 
 - GET `/internal/ai/health`
   - Purpose: verify Redis and worker heartbeat
@@ -92,8 +111,10 @@ All public endpoints use JWT auth to get `user_id` (via `app.core.auth.get_curre
 ```
 storage/
   user_data/
-    {userId}/
+    {workspaceId}/
       raw_transactions.parquet
+      trusted_labels.parquet
+      feedback_events.parquet
       monthly_series.parquet
       categories_stats.json
       anomaly_stats.json
@@ -102,10 +123,10 @@ storage/
 models/
   prediction/
     v1/
-      {userId}/model.joblib
+      {workspaceId}/model.joblib
   autocat/
     v1/
-      {userId}/model.joblib
+      {workspaceId}/model.joblib
 ```
 
 Notes:
@@ -113,19 +134,19 @@ Notes:
 
 ---
 
-## Java integration (how `budget-api` should sync)
+## Java integration (how `budget-api` syncs)
 
-Two practical options:
+`budget-api` is the only supported producer. It writes a transactional outbox
+alongside the financial mutation and posts committed rows to
+`/internal/ai/sync-user-data`. Retry always keeps the same `syncId`; both
+`accepted` and `duplicate` mean success. Backfill and Open Finance use bounded
+incremental upsert pages so a later page never replaces an earlier one.
 
-A) HTTP sync (fast to implement)
-- `budget-api` posts incremental or full payloads to `/internal/ai/sync-user-data` with `X-Service-Token`.
-- For events (create/update/delete transaction) use incremental sync with a small rawTransactions array and `syncType: "incremental"`.
-- For bulk import or initial sync use `mode: "full"` and `syncType: "full"`.
-- After POST, `budget-api` can poll `/internal/ai/user/{userId}/training-status` or read `storage/user_data/{userId}/training_status.json` (if shared filesystem) for progress.
-
-B) Message broker (recommended at scale)
-- Produce messages to a queue (Kafka) and have ai-service consume and apply syncs to the feature store.
-- This decouples systems and handles spikes better.
+Canonical transactions feed features. Trusted labels are persisted separately
+and accept only `USER`, `RULE`, `BANK_MAPPING`, or
+`USER_CONFIRMED_SUGGESTION`; a raw `AI` label receives HTTP 400. Feedback is
+deduplicated by `feedbackId`. The currently connected feedback types are
+`SUGGESTION_ACCEPTED`, `SUGGESTION_REJECTED`, and `CATEGORY_CORRECTED`.
 
 Important: Do not rely solely on immediate training completion — training is performed asynchronously (RQ worker). Use `training_status.json` or training-status endpoint for readiness.
 
@@ -134,20 +155,21 @@ Important: Do not rely solely on immediate training completion — training is p
 ## API docs (sync + status)
 - `POST /internal/ai/sync-user-data`
   - Header: `X-Service-Token: <token>`
-  - Body: same payload as above example (rawTransactions + monthlyAggregates)
+  - Body: the v1 workspace envelope shown above (`transactions` plus optional `monthlyAggregates`)
   - Response: `{
       "status": "accepted",
-      "userId": "123",
+      "workspaceId": "workspace-123",
+      "syncId": "sync-123",
       "lastSync": "...",
       "queued": true|false,
       "jobId": "..."|null,
       "alreadyRunning": true|false
     }`
   - Retry pattern: if `queued` is false and `alreadyRunning` is false, wait and re-POST after 30s (idempotent). If `alreadyRunning` is true, skip until job finishes.
-- `GET /internal/ai/user/{userId}/training-status`
+- `GET /internal/ai/workspace/{workspaceId}/training-status`
   - Header: `X-Service-Token`
   - Response: `{
-      "userId": "123",
+      "workspaceId": "workspace-123",
       "jobId": "job-123",
       "status": { ... RQ job structure ... }
     }`
@@ -248,7 +270,7 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 
 - Structured logs use `logger.info(..., extra={"user_id":..., ...})` throughout the code base.
 - Metrics are available at `/metrics` for Prometheus scraping.
-- Training status is persisted to `storage/user_data/{userId}/training_status.json` for simple integration which Java can read.
+- Training status is persisted to `storage/user_data/{workspaceId}/training_status.json`.
 
 ---
 
@@ -263,7 +285,7 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 
 - Replace local feature store with object store (S3) or a central DB for multi-instance deployments.
 - Implement Redlock or ownership checks for locks to make distributed locks robust.
-- Add a Java-side client library (AiSyncService) that encapsulates request formatting and error handling.
+- Move feature artifacts to shared/object storage before horizontally scaling API instances.
 - Add an admin endpoint to re-enqueue training for users / batch re-training.
 - Add a retraining scheduler (nightly batches) and a monitoring dashboard (RQ dashboard / Prometheus+Grafana).
 

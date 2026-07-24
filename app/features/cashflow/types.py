@@ -21,6 +21,9 @@ class CashflowForecastItem(BaseModel):
 
 
 class CashflowInsightsRequest(BaseModel):
+    workspaceId: Optional[str] = None
+    actorUserId: Optional[str] = None
+    requestId: Optional[str] = None
     months: int = 6
 
 
@@ -29,4 +32,3 @@ class CashflowInsightsResponse(BaseModel):
     forecast: List[CashflowForecastItem]
     averageMonthlyBalance: float
     insights: List[str]
-

@@ -6,6 +6,9 @@ from pydantic import BaseModel
 
 
 class SavingsRecommendationRequest(BaseModel):
+    workspaceId: Optional[str] = None
+    actorUserId: Optional[str] = None
+    requestId: Optional[str] = None
     savingsGoalAmount: Optional[float]
     targetDate: Optional[str]
 
@@ -29,4 +32,3 @@ class SavingsPlan(BaseModel):
 class SavingsRecommendationResponse(BaseModel):
     plan: SavingsPlan
     summaryText: Optional[str]
-
