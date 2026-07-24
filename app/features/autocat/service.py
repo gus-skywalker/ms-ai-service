@@ -262,7 +262,7 @@ def _persist_bundle(
     base_dir.mkdir(parents=True, exist_ok=True)
 
     paths = {
-        "model": base_dir / "model.joblib",
+        "model": base_dir / "classifier.joblib",
         "vectorizer": base_dir / "vectorizer.joblib",
         "label_encoder": base_dir / "label_encoder.joblib",
     }
@@ -302,6 +302,8 @@ def _load_bundle_from_payload(user_id: str, payload: Optional[Dict[str, Any]]):
     except Exception:
         logger.exception("autocat failed loading artifacts", extra={"user_id": user_id})
         raise CorruptedModelError("failed to load artifacts")
+    if not hasattr(model, "predict") or not hasattr(model, "predict_proba"):
+        raise CorruptedModelError("invalid model artifact")
 
     return model, vectorizer, label_encoder, payload.get("stats", {}), payload.get("amount_stats", {"mean": 0.0, "std": 1.0})
 

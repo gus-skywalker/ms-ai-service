@@ -233,6 +233,11 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 
 - `AI_SERVICE_TOKEN` — internal service token used by `budget-api` to call internal endpoints.
 - `REDIS_URL` — Redis connection used for RQ queue.
+- `AUTH_SERVER_URL` — auth service base URL used to validate public endpoint JWTs.
+- `JWT_JWKS_PATH` — JWKS path appended to `AUTH_SERVER_URL`; defaults to `/oauth2/jwks`.
+- `AUTH_JWKS_TIMEOUT_SECONDS` — timeout for JWKS fetches; defaults to `3.0`.
+- `AUTH_JWKS_CACHE_TTL_SECONDS` — fresh JWKS cache lifetime; defaults to `300`.
+- `AUTH_JWKS_STALE_SECONDS` — max time to keep using cached JWKS when auth is temporarily unavailable; defaults to `3600`.
 - `TRAINING_MIN_MONTHS`, `TRAINING_MIN_TRANSACTIONS`, `TRAINING_MIN_DESCRIPTION_RATIO` — configurable thresholds for eligibility.
 - `TRAINING_FORCE_ENQUEUE` — dev-only flag to bypass eligibility (do NOT enable in prod).
 - `AI_MODEL_DIR` — optional override for model paths used in some tests.

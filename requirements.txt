@@ -13,3 +13,4 @@ redis
 rq
 fakeredis
 prometheus_client
+pytest

@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     JWT_JWKS_PATH: str = "/oauth2/jwks"
     JWT_ALGORITHM: str = "RS256"
     JWT_AUDIENCE: Optional[str] = None
+    AUTH_JWKS_TIMEOUT_SECONDS: float = 3.0
+    AUTH_JWKS_CACHE_TTL_SECONDS: int = 300
+    AUTH_JWKS_STALE_SECONDS: int = 3600
     AI_SERVICE_TOKEN: Optional[str] = "testtoken"
     AI_MODEL_DIR: str = "./models"
 

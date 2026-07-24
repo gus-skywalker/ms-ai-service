@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Optional
 import httpx
+import logging
+import time
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt, JWTError
@@ -9,6 +11,9 @@ import os
 
 _http_bearer = HTTPBearer(auto_error=True)
 _jwks_cache: Optional[dict] = None
+_jwks_cache_expires_at: float = 0.0
+_jwks_cache_stale_until: float = 0.0
+_logger = logging.getLogger(__name__)
 
 def verify_service_token(token: str) -> bool:
     if token is None:
@@ -18,15 +23,31 @@ def verify_service_token(token: str) -> bool:
         return False
     return token.strip() == expected.strip()
 
-async def _fetch_jwks() -> dict:
-    global _jwks_cache
+async def _fetch_jwks(force_refresh: bool = False) -> dict:
+    global _jwks_cache, _jwks_cache_expires_at, _jwks_cache_stale_until
     settings = get_settings()
-    jwks_url = settings.AUTH_SERVER_URL.rstrip("/") + settings.JWT_JWKS_PATH
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(jwks_url)
-        resp.raise_for_status()
-        _jwks_cache = resp.json()
+    now = time.monotonic()
+    if not force_refresh and _jwks_cache is not None and now < _jwks_cache_expires_at:
         return _jwks_cache
+
+    jwks_url = settings.AUTH_SERVER_URL.rstrip("/") + settings.JWT_JWKS_PATH
+    try:
+        async with httpx.AsyncClient(timeout=settings.AUTH_JWKS_TIMEOUT_SECONDS) as client:
+            resp = await client.get(jwks_url)
+            resp.raise_for_status()
+            _jwks_cache = resp.json()
+            _jwks_cache_expires_at = now + settings.AUTH_JWKS_CACHE_TTL_SECONDS
+            _jwks_cache_stale_until = now + settings.AUTH_JWKS_STALE_SECONDS
+            return _jwks_cache
+    except (httpx.HTTPError, ValueError) as exc:
+        if _jwks_cache is not None and now < _jwks_cache_stale_until:
+            _logger.warning("Using stale JWKS cache after auth server fetch failed: %s", exc)
+            return _jwks_cache
+        _logger.warning("Unable to fetch JWKS from auth server: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable",
+        ) from exc
 
 async def _decode_token_with_jwks(token: str) -> dict:
     settings = get_settings()
@@ -44,6 +65,12 @@ async def _decode_token_with_jwks(token: str) -> dict:
             key = jwk
             break
     if key is None:
+        jwks = await _fetch_jwks(force_refresh=True)
+        for jwk in jwks.get("keys", []):
+            if jwk.get("kid") == kid:
+                key = jwk
+                break
+    if key is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unable to find matching JWK",
@@ -59,7 +86,6 @@ async def _decode_token_with_jwks(token: str) -> dict:
         )
         return decoded
     except JWTError as exc:
-        _jwks_cache = None
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {exc}",
