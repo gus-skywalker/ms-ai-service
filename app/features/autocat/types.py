@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
@@ -14,9 +14,18 @@ class CategorySuggestion(BaseModel):
 
 class AutoCategorizeSuggestion(BaseModel):
     expenseId: Optional[str]
-    suggestedCategory: CategorySuggestion
+    suggestedCategory: Optional[CategorySuggestion]
     alternativeCategories: List[CategorySuggestion]
     reasoning: Optional[str]
+    confidence: float = 0.0
+    strategy: str = "NONE"
+    strategyVersion: Optional[str] = None
+    modelVersion: Optional[str] = None
+    modelScope: Optional[str] = None
+    source: str = "NONE"
+    explanation: Optional[str] = None
+    safeToApply: bool = False
+    status: str = "NO_SAFE_SUGGESTION"
 
 
 class AutoCategorizeRequestItem(BaseModel):
@@ -32,8 +41,14 @@ class AutoCategorizeRequest(BaseModel):
     actorUserId: Optional[str] = None
     requestId: Optional[str] = None
     userId: Optional[str] = None
+    allowedCategoryIds: Optional[List[int]] = None
     expenses: List[AutoCategorizeRequestItem]
 
 
 class AutoCategorizeResponse(BaseModel):
+    status: str = "READY"
+    reason: Optional[str] = None
+    modelVersion: Optional[str] = None
+    modelScope: Optional[str] = None
+    eligibility: Optional[dict[str, Any]] = None
     suggestions: List[AutoCategorizeSuggestion]

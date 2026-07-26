@@ -114,19 +114,9 @@ def train_prediction(user_id: str) -> Dict:
 
 
 def train_autocat(user_id: str) -> Dict:
-    start = time.time()
-    df = _load_transactions(user_id)
-    if df.empty:
-        raise ValueError("transactions missing")
-    from sklearn.feature_extraction.text import TfidfVectorizer
+    from app.features.autocat.training import train_autocat as canonical_train_autocat
 
-    texts = df["description"].fillna("").tolist()
-    vectorizer = TfidfVectorizer(max_features=1000)
-    vectorizer.fit(texts)
-    save_model("autocat", "v1", {"vectorizer": vectorizer}, user_id)
-    duration = time.time() - start
-    logger.info("train_autocat completed", extra={"user_id": user_id, "duration_s": duration, "vocab_size": len(vectorizer.vocabulary_)})
-    return {"vocab_size": len(vectorizer.vocabulary_), "duration_s": duration}
+    return canonical_train_autocat(user_id)
 
 
 def compute_anomaly_stats(user_id: str) -> Dict:

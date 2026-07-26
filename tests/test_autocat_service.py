@@ -1,303 +1,198 @@
-import os
 from pathlib import Path
-import re
 
 import pandas as pd
 import pytest
 
+from app.core.config import get_settings
 from app.core.feature_store import path_for_user
+from app.features.autocat.bundle_store import get_autocat_bundle_store
+from app.features.autocat.policy import ALLOWED_LABEL_SOURCES, evaluate_eligibility, load_training_dataset
 from app.features.autocat.service import auto_categorize_expenses
+from app.features.autocat.training import train_autocat
 from app.features.autocat.types import AutoCategorizeRequest, AutoCategorizeRequestItem
-from app.models.transactions import AiTransaction
-
-
-def _make_history(count, categories, user_id="user1"):
-    history = []
-    for i in range(count):
-        cat = categories[i % len(categories)]
-        history.append(
-            AiTransaction(
-                transactionId=f"hist-{i}",
-                userId=user_id,
-                type="EXPENSE",
-                date="2025-01-01",
-                amount=100 + i,
-                currency="BRL",
-                categoryId=cat,
-                description=f"Descricao categoria {cat} item {i}",
-            )
-        )
-    return history
-
-
-def _request_items(descriptions):
-    return [
-        AutoCategorizeRequestItem(
-            expenseId=f"req-{i}",
-            description=desc,
-            amount=50 + i,
-            paymentMethodId=1,
-        )
-        for i, desc in enumerate(descriptions)
-    ]
 
 
 @pytest.fixture(autouse=True)
-def _patch_model_dir(tmp_path, monkeypatch):
+def isolated_autocat(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.core.feature_store.STORAGE_PATH", str(tmp_path / "workspace_data"))
     monkeypatch.setenv("AI_MODEL_DIR", str(tmp_path / "models"))
-    from app.core.config import get_settings
-
+    get_settings.cache_clear()
+    yield
     get_settings.cache_clear()
 
 
-def _train_with_history(monkeypatch, history, extra_expenses=None, history_accum=None):
-    monkeypatch.setattr(
-        "app.features.autocat.service.get_user_labeled_history",
-        lambda _: history_accum if history_accum is not None else history,
-    )
-    # dispara treinamento automático com o mesmo user_id do histórico e expenses extras
-    uid = history[0].userId if history else "dummy-user-trigger"
-    expenses = extra_expenses if extra_expenses is not None else []
-    auto_categorize_expenses(uid, AutoCategorizeRequest(expenses=expenses))
-
-
-def _clean_user_model_dir(user_id):
-    model_dir = Path(os.getenv("AI_MODEL_DIR")) / "autocat" / "autocat_v1" / user_id
-    if model_dir.exists():
-        for f in model_dir.glob("*"):
-            f.unlink()
-        model_dir.rmdir()
-
-
-def test_training_and_prediction(monkeypatch):
-    user_id = "user-train"
-    _clean_user_model_dir(user_id)
-    history = _make_history(40, [1, 2], user_id=user_id)
-    _train_with_history(monkeypatch, history)
-    request = AutoCategorizeRequest(expenses=_request_items(["Supermercado Extra", "McDonalds"]))
-    response = auto_categorize_expenses(user_id, request)
-    assert all(s.suggestedCategory.id in {1, 2} for s in response.suggestions)
-    assert all(s.suggestedCategory.id != 14 for s in response.suggestions)
-
-
-def test_small_labeled_history_does_not_train_below_threshold(monkeypatch):
-    user_id = "user-small-history"
-    _clean_user_model_dir(user_id)
-    history = [
-        AiTransaction(transactionId="hist-1", userId=user_id, type="EXPENSE", date="2025-11-01", amount=120, currency="BRL", categoryId=1, description="Mercado Extra compra"),
-        AiTransaction(transactionId="hist-2", userId=user_id, type="EXPENSE", date="2025-11-02", amount=98, currency="BRL", categoryId=1, description="Supermercado Pao de Acucar"),
-        AiTransaction(transactionId="hist-3", userId=user_id, type="EXPENSE", date="2025-11-03", amount=210, currency="BRL", categoryId=1, description="Atacadao alimentos"),
-        AiTransaction(transactionId="hist-4", userId=user_id, type="EXPENSE", date="2025-11-04", amount=32, currency="BRL", categoryId=2, description="Uber viagem centro"),
-        AiTransaction(transactionId="hist-5", userId=user_id, type="EXPENSE", date="2025-11-05", amount=28, currency="BRL", categoryId=2, description="99 Taxi corrida"),
-        AiTransaction(transactionId="hist-6", userId=user_id, type="EXPENSE", date="2025-11-06", amount=8, currency="BRL", categoryId=2, description="Metro bilhete unico"),
-        AiTransaction(transactionId="hist-7", userId=user_id, type="EXPENSE", date="2025-11-07", amount=39.9, currency="BRL", categoryId=3, description="Netflix assinatura"),
-        AiTransaction(transactionId="hist-8", userId=user_id, type="EXPENSE", date="2025-11-08", amount=21.9, currency="BRL", categoryId=3, description="Spotify mensalidade"),
-        AiTransaction(transactionId="hist-9", userId=user_id, type="EXPENSE", date="2025-11-09", amount=14.9, currency="BRL", categoryId=3, description="Amazon Prime assinatura"),
-        AiTransaction(transactionId="hist-10", userId=user_id, type="EXPENSE", date="2025-11-10", amount=46, currency="BRL", categoryId=4, description="Drogaria Sao Paulo"),
-        AiTransaction(transactionId="hist-11", userId=user_id, type="EXPENSE", date="2025-11-11", amount=62, currency="BRL", categoryId=4, description="Droga Raia remedios"),
-        AiTransaction(transactionId="hist-12", userId=user_id, type="EXPENSE", date="2025-11-12", amount=54, currency="BRL", categoryId=5, description="Restaurante almoco"),
-        AiTransaction(transactionId="hist-13", userId=user_id, type="EXPENSE", date="2025-11-13", amount=71, currency="BRL", categoryId=5, description="Ifood jantar"),
-    ]
-    monkeypatch.setattr("app.features.autocat.service.get_user_labeled_history", lambda _: history)
-
-    request = AutoCategorizeRequest(expenses=[
-        AutoCategorizeRequestItem(expenseId="req-market", description="Supermercado Extra", amount=87, paymentMethodId=1),
-        AutoCategorizeRequestItem(expenseId="req-uber", description="Uber aeroporto", amount=45, paymentMethodId=1),
-    ])
-    response = auto_categorize_expenses(user_id, request)
-
-    assert all(s.suggestedCategory.id == 14 for s in response.suggestions)
-    assert all(s.reasoning == "insufficient-history" for s in response.suggestions)
-
-
-def test_seed_sized_history_trains_and_boosts_with_similarity(monkeypatch):
-    user_id = "user-seed-history"
-    _clean_user_model_dir(user_id)
-    examples = [
-        ("Mercado Extra compra da semana", 1, 142.35),
-        ("Supermercado Pao de Acucar", 1, 87.42),
-        ("Atacadao alimentos", 1, 213.90),
-        ("Carrefour mercado", 1, 96.10),
-        ("Hortifruti frutas e verduras", 1, 54.75),
-        ("Uber viagem centro", 2, 31.20),
-        ("99 Taxi corrida", 2, 27.80),
-        ("Metro bilhete unico", 2, 8.80),
-        ("Uber aeroporto", 2, 44.50),
-        ("Estacionamento shopping", 2, 19.90),
-        ("Netflix assinatura mensal", 3, 39.90),
-        ("Spotify mensalidade", 3, 21.90),
-        ("Amazon Prime assinatura", 3, 14.90),
-        ("Netflix streaming", 3, 39.90),
-        ("iCloud armazenamento", 3, 29.90),
-        ("Drogaria Sao Paulo remedios", 4, 46.20),
-        ("Droga Raia farmacia", 4, 62.40),
-        ("Consulta laboratorio exame", 4, 118.00),
-        ("Pague Menos farmacia", 4, 35.70),
-        ("Drogasil medicamentos", 4, 74.80),
-        ("Restaurante almoco", 5, 54.00),
-        ("Ifood jantar", 5, 71.30),
-        ("Padaria cafe da manha", 5, 18.50),
-        ("Outback jantar", 5, 83.10),
-        ("Lanchonete lanche", 5, 42.90),
-    ]
-    history = [
-        AiTransaction(
-            transactionId=f"hist-{idx}",
-            userId=user_id,
-            type="EXPENSE",
-            date="2025-11-01",
-            amount=amount,
-            currency="BRL",
-            categoryId=category_id,
-            description=description,
+def _write_learning_data(workspace_id: str, count: int = 24, sources=None, blank_descriptions: int = 0):
+    sources = sources or ["USER"] * count
+    transactions, labels = [], []
+    for index in range(count):
+        category = 1 if index % 2 == 0 else 2
+        description = "" if index < blank_descriptions else (
+            f"mercado supermercado alimento compra {index}" if category == 1
+            else f"uber taxi transporte corrida {index}"
         )
-        for idx, (description, category_id, amount) in enumerate(examples)
-    ]
-    monkeypatch.setattr("app.features.autocat.service.get_user_labeled_history", lambda _: history)
-
-    request = AutoCategorizeRequest(expenses=[
-        AutoCategorizeRequestItem(expenseId="req-market", description="Supermercado Extra", amount=87, paymentMethodId=1),
-        AutoCategorizeRequestItem(expenseId="req-uber", description="Uber aeroporto", amount=45, paymentMethodId=1),
-    ])
-    response = auto_categorize_expenses(user_id, request)
-
-    assert response.suggestions[0].suggestedCategory.id == 1
-    assert response.suggestions[1].suggestedCategory.id == 2
-    assert all(s.suggestedCategory.confidence > 0.5 for s in response.suggestions)
-    assert all("historical-similarity" in s.reasoning for s in response.suggestions)
-
-
-def test_parquet_timestamp_history_is_normalized(monkeypatch):
-    user_id = "user-parquet-history"
-    records = [
-        {
-            "transactionId": f"hist-{idx}",
-            "userId": user_id,
-            "type": "EXPENSE",
-            "date": pd.Timestamp("2026-07-15"),
-            "amount": 50 + idx,
-            "currency": "BRL",
-            "categoryId": 1 if idx < 11 else 2,
-            "description": f"Descricao categoria {1 if idx < 11 else 2} item {idx}",
-        }
-        for idx in range(22)
-    ]
-    path = Path(path_for_user(user_id, "raw_transactions.parquet"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(records).to_parquet(path)
-
-    request = AutoCategorizeRequest(
-        expenses=[
-            AutoCategorizeRequestItem(
-                expenseId="req-timestamp",
-                description="Descricao categoria 1 nova",
-                amount=80,
-                paymentMethodId=1,
-            )
-        ]
-    )
-    response = auto_categorize_expenses(user_id, request)
-
-    assert response.suggestions[0].reasoning != "model-error"
+        transactions.append({
+            "workspaceId": workspace_id, "transactionId": f"tx-{index}", "entryId": f"entry-{index}",
+            "date": "2026-07-01", "type": "EXPENSE", "amount": 10 + index,
+            "categoryId": 99, "description": description,
+        })
+        source = sources[index]
+        labels.append({
+            "labelId": f"label-{index}", "transactionId": f"tx-{index}", "entryId": f"entry-{index}",
+            "categoryId": category, "labelSource": source,
+            "trust": ALLOWED_LABEL_SOURCES.get(source, 1.0), "labeledAt": f"2026-07-{(index % 24) + 1:02d}T10:00:00Z",
+        })
+    tx_path = Path(path_for_user(workspace_id, "raw_transactions.parquet"))
+    tx_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(transactions).to_parquet(tx_path)
+    pd.DataFrame(labels).to_parquet(path_for_user(workspace_id, "trusted_labels.parquet"))
 
 
-def test_alternative_categories(monkeypatch):
-    user_id = "user-alt"
-    _clean_user_model_dir(user_id)
-    history = _make_history(60, [1, 2, 3], user_id=user_id)
-    _train_with_history(monkeypatch, history)
-    request = AutoCategorizeRequest(expenses=_request_items(["Supermercado Extra" for _ in range(3)]))
-    response = auto_categorize_expenses(user_id, request)
-    assert response.suggestions
-    for suggestion in response.suggestions:
-        assert suggestion.alternativeCategories
-        assert 0 < len(suggestion.alternativeCategories) <= 3
-        confidences = [alt.confidence for alt in suggestion.alternativeCategories]
-        assert confidences == sorted(confidences, reverse=True)
-
-
-def test_fallback_when_model_removed_and_history_unavailable(monkeypatch, tmp_path):
-    user_id = "user-corrupt"
-    _clean_user_model_dir(user_id)
-    # Use at least two classes in history and request
-    history = _make_history(40, [5, 6], user_id=user_id)
-    request_expenses = [
-        AutoCategorizeRequestItem(expenseId="req-0", description="Descricao categoria 5 item 0", amount=50, paymentMethodId=1),
-        AutoCategorizeRequestItem(expenseId="req-1", description="Descricao categoria 6 item 1", amount=51, paymentMethodId=1),
-    ]
-    _train_with_history(monkeypatch, history, extra_expenses=request_expenses)
-    request = AutoCategorizeRequest(expenses=request_expenses)
-    response = auto_categorize_expenses(user_id, request)
-    for s in response.suggestions:
-        assert s.suggestedCategory.id in {5, 6}
-
-    # Simular modelo corrompido: deletar modelo e histórico
-    from app.features.autocat import service as autocat_service
-    from app.core.models_registry import get_model_registry, ModelKey
-
-
-    registry = get_model_registry()
-    key = ModelKey(feature="autocat", version="autocat_v1", user_id=user_id)
-    registry.delete_model(key)
-    autocat_service._CORRUPT_FLAG.clear()
-
-    monkeypatch.setattr(
-        "app.features.autocat.service.get_user_labeled_history",
-        lambda _: []
+def _request(description="mercado supermercado compra", allowed=None):
+    return AutoCategorizeRequest(
+        allowedCategoryIds=allowed,
+        expenses=[AutoCategorizeRequestItem(expenseId="expense-1", description=description, amount=25, paymentMethodId=1)],
     )
 
-    response_without_history = auto_categorize_expenses(user_id, request)
-    assert all(s.suggestedCategory.id == 14 for s in response_without_history.suggestions), \
-        f"Expected all category 14, got: {[s.suggestedCategory.id for s in response_without_history.suggestions]}"
-    assert all(s.reasoning == "insufficient-history" for s in response_without_history.suggestions)
+
+def test_raw_transaction_category_is_not_a_training_label():
+    _write_learning_data("raw-only")
+    Path(path_for_user("raw-only", "trusted_labels.parquet")).unlink()
+    assert load_training_dataset("raw-only").empty
+    assert evaluate_eligibility("raw-only").blockingReasons[0] == "INSUFFICIENT_LABELS"
 
 
-def test_empty_descriptions(monkeypatch):
-    user_id = "user-empty"
-    _clean_user_model_dir(user_id)
-    history = _make_history(40, [9, 10], user_id=user_id)
-    _train_with_history(monkeypatch, history)
-    request = AutoCategorizeRequest(
-        expenses=[AutoCategorizeRequestItem(expenseId="req-empty", description=None, amount=80.0, paymentMethodId=1)]
-    )
-    response = auto_categorize_expenses(user_id, request)
-    assert response.suggestions[0].suggestedCategory.id == 14
-    assert response.suggestions[0].reasoning == "empty-description"
+@pytest.mark.parametrize("source", ["AI", "HISTORY", "DOMAIN_ALIAS"])
+def test_derived_sources_are_excluded(source):
+    _write_learning_data("untrusted", sources=[source] * 24)
+    assert load_training_dataset("untrusted").empty
 
 
-def test_unbalanced_labels(monkeypatch):
-    user_id = "user-unbal"
-    _clean_user_model_dir(user_id)
-    history = _make_history(50, [1, 1, 1, 2], user_id=user_id)
-    _train_with_history(monkeypatch, history)
-    request = AutoCategorizeRequest(
-        expenses=[AutoCategorizeRequestItem(expenseId="req-0", description="Descricao categoria 2 item 1", amount=50, paymentMethodId=1)]
-    )
-    response = auto_categorize_expenses(user_id, request)
-    assert response.suggestions[0].suggestedCategory.id in {1, 2}
+@pytest.mark.parametrize("source", list(ALLOWED_LABEL_SOURCES))
+def test_canonical_sources_are_accepted(source):
+    _write_learning_data(source, sources=[source] * 24)
+    assert len(load_training_dataset(source)) == 24
 
 
-def test_retraining_when_history_grows(monkeypatch):
-    user_id = "user-retrain"
-    _clean_user_model_dir(user_id)
-    # Use at least duas classes em history e request
-    small_history = _make_history(40, [3, 4], user_id=user_id)
-    request_expenses = [
-        AutoCategorizeRequestItem(expenseId="req-0", description="Descricao categoria 3 item 0", amount=50, paymentMethodId=1),
-        AutoCategorizeRequestItem(expenseId="req-1", description="Descricao categoria 4 item 1", amount=51, paymentMethodId=1),
-    ]
-    # Treina com histórico inicial
-    _train_with_history(monkeypatch, small_history, extra_expenses=request_expenses, history_accum=small_history)
-    request = AutoCategorizeRequest(expenses=request_expenses)
-    first_response = auto_categorize_expenses(user_id, request)
-    expected_count = len(small_history)
-    match = re.search(r"(\d+) transações", first_response.suggestions[0].reasoning)
-    assert match and int(match.group(1)) == expected_count
+def test_label_category_wins_over_raw_category():
+    _write_learning_data("label-wins")
+    assert set(load_training_dataset("label-wins")["categoryId"]) == {1, 2}
 
-    # Treina com histórico maior (acumulado)
-    larger_history = _make_history(80, [3, 4], user_id=user_id)
-    _train_with_history(monkeypatch, larger_history, extra_expenses=request_expenses, history_accum=larger_history)
-    second_response = auto_categorize_expenses(user_id, request)
-    expected_count2 = len(larger_history)
-    match2 = re.search(r"(\d+) transações", second_response.suggestions[0].reasoning)
-    assert match2 and int(match2.group(1)) == expected_count2
+
+def test_latest_conflicting_label_wins():
+    _write_learning_data("conflict")
+    path = path_for_user("conflict", "trusted_labels.parquet")
+    labels = pd.read_parquet(path)
+    labels = pd.concat([labels, pd.DataFrame([{
+        "labelId": "latest", "transactionId": "tx-0", "entryId": "entry-0", "categoryId": 7,
+        "labelSource": "USER", "trust": 1.0, "labeledAt": "2026-08-01T00:00:00Z",
+    }])], ignore_index=True)
+    labels.to_parquet(path)
+    dataset = load_training_dataset("conflict")
+    assert dataset.loc[dataset["entryId"] == "entry-0", "categoryId"].item() == 7
+    assert len(dataset) == 24
+
+
+def test_eligibility_reports_structured_blockers():
+    _write_learning_data("small", count=8)
+    diagnostic = evaluate_eligibility("small")
+    assert diagnostic.eligible is False
+    assert "INSUFFICIENT_LABELS" in diagnostic.blockingReasons
+    assert diagnostic.classDistribution == {"1": 4, "2": 4}
+
+
+def test_description_coverage_is_feature_specific():
+    _write_learning_data("blank", blank_descriptions=12)
+    diagnostic = evaluate_eligibility("blank")
+    assert "INSUFFICIENT_DESCRIPTION_COVERAGE" in diagnostic.blockingReasons
+
+
+def test_canonical_training_activates_complete_bundle():
+    _write_learning_data("trained")
+    result = train_autocat("trained")
+    bundle = get_autocat_bundle_store().load_active("trained")
+    assert result["status"] == "READY"
+    assert result["activated"] is True
+    assert bundle["scope"] == "WORKSPACE"
+    assert bundle["workspaceId"] == "trained"
+    assert bundle["labelPolicyVersion"] == "autocat-label-policy-v1"
+    assert bundle["metrics"]["macroF1"] >= 0.35
+
+
+def test_same_dataset_does_not_retrain():
+    _write_learning_data("unchanged")
+    first = train_autocat("unchanged")
+    second = train_autocat("unchanged")
+    assert second["status"] == "UNCHANGED_DATASET"
+    assert second["modelVersion"] == first["modelVersion"]
+
+
+def test_inference_never_trains_implicitly():
+    _write_learning_data("eligible-no-model")
+    response = auto_categorize_expenses("eligible-no-model", _request(allowed=[1, 2]))
+    assert response.status == "MODEL_NOT_READY"
+    assert response.suggestions[0].suggestedCategory is None
+    assert get_autocat_bundle_store().active_metadata("eligible-no-model") is None
+
+
+def test_personalized_inference_is_safe_inside_active_domain():
+    _write_learning_data("infer")
+    train_autocat("infer")
+    response = auto_categorize_expenses("infer", _request(allowed=[1, 2]))
+    suggestion = response.suggestions[0]
+    assert response.status == "READY"
+    assert suggestion.suggestedCategory.id == 1
+    assert suggestion.safeToApply is True
+    assert suggestion.modelScope == "WORKSPACE"
+    assert suggestion.modelVersion == response.modelVersion
+
+
+def test_prediction_outside_allowed_domain_abstains():
+    _write_learning_data("domain")
+    train_autocat("domain")
+    suggestion = auto_categorize_expenses("domain", _request(allowed=[9])).suggestions[0]
+    assert suggestion.status == "OUTSIDE_ALLOWED_DOMAIN"
+    assert suggestion.safeToApply is False
+    assert suggestion.suggestedCategory is None
+
+
+def test_missing_domain_abstains():
+    _write_learning_data("missing-domain")
+    train_autocat("missing-domain")
+    suggestion = auto_categorize_expenses("missing-domain", _request()).suggestions[0]
+    assert suggestion.safeToApply is False
+
+
+def test_low_confidence_abstains(monkeypatch):
+    _write_learning_data("low-confidence")
+    train_autocat("low-confidence")
+    monkeypatch.setenv("AUTOCAT_SAFE_CONFIDENCE", "1.01")
+    get_settings.cache_clear()
+    suggestion = auto_categorize_expenses("low-confidence", _request(allowed=[1, 2])).suggestions[0]
+    assert suggestion.status == "NO_SAFE_SUGGESTION"
+    assert suggestion.safeToApply is False
+
+
+def test_empty_description_has_semantic_status():
+    _write_learning_data("empty")
+    train_autocat("empty")
+    suggestion = auto_categorize_expenses("empty", _request(description=None, allowed=[1, 2])).suggestions[0]
+    assert suggestion.status == "INVALID_INPUT"
+    assert suggestion.suggestedCategory is None
+
+
+def test_workspace_model_isolation():
+    _write_learning_data("workspace-a")
+    train_autocat("workspace-a")
+    response = auto_categorize_expenses("workspace-b", _request(allowed=[1, 2]))
+    assert response.status == "INSUFFICIENT_LABELED_HISTORY"
+    assert response.modelVersion is None
+
+
+def test_legacy_artifact_is_never_loaded():
+    workspace = "legacy"
+    legacy = Path(get_settings().AI_MODEL_DIR) / "autocat" / "autocat_v1" / workspace
+    legacy.mkdir(parents=True)
+    (legacy / "model.joblib").write_bytes(b"legacy")
+    response = auto_categorize_expenses(workspace, _request(allowed=[1, 2]))
+    assert response.status == "MODEL_REJECTED"
+    assert response.reason == "legacy-model-incompatible"

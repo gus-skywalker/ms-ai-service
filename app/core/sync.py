@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from app.core.feature_store import get_metadata, save_semantic_records, save_user_data, update_metadata
-from app.core.trainers import is_eligible_for_training
-from app.core.training_queue import enqueue_training_job
+from app.core.training_queue import enqueue_autocat_training_job
+from app.features.autocat.policy import evaluate_eligibility, validate_label_source
 
 def handle_sync_request(payload: dict):
     workspace_id = _resolve_workspace_id(payload)
@@ -43,8 +43,12 @@ def handle_sync_request(payload: dict):
     job_id = None
     queued = False
     already_running = False
-    if is_eligible_for_training(workspace_id):
-        job_id, already_running = enqueue_training_job(workspace_id)
+    eligibility = evaluate_eligibility(workspace_id)
+    enqueue_reason = "NOT_ELIGIBLE"
+    if eligibility.eligible and eligibility.datasetFingerprint:
+        job_id, already_running, enqueue_reason = enqueue_autocat_training_job(
+            workspace_id, eligibility.datasetFingerprint,
+        )
         queued = job_id is not None
     return {
         "status": "accepted",
@@ -55,6 +59,8 @@ def handle_sync_request(payload: dict):
         "queued": queued,
         "jobId": job_id,
         "alreadyRunning": already_running,
+        "trainingDecision": enqueue_reason,
+        "autocatEligibility": eligibility.to_dict(),
     }
 
 
@@ -77,10 +83,10 @@ def _optional_string(value) -> str | None:
 
 
 def _validate_trusted_labels(labels):
-    accepted_sources = {"USER", "RULE", "BANK_MAPPING", "USER_CONFIRMED_SUGGESTION"}
     for label in labels:
         if not isinstance(label, dict):
             raise HTTPException(status_code=400, detail="Each label must be an object")
-        source = str(label.get("labelSource", "")).strip().upper()
-        if source not in accepted_sources:
-            raise HTTPException(status_code=400, detail=f"Untrusted labelSource: {source or 'missing'}")
+        try:
+            validate_label_source(label.get("labelSource"))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error

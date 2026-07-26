@@ -5,6 +5,7 @@ from app.main import app
 from app.core.feature_store import UserFinancialDataProvider
 from app.core.feature_store import path_for_user
 import pandas as pd
+from types import SimpleNamespace
 
 os.environ["AI_SERVICE_TOKEN"] = "testtoken"
 client = TestClient(app)
@@ -13,7 +14,12 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def isolated_feature_store(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.feature_store.STORAGE_PATH", str(tmp_path / "workspace_data"))
-    monkeypatch.setattr("app.core.sync.is_eligible_for_training", lambda _workspace_id: False)
+    monkeypatch.setattr(
+        "app.core.sync.evaluate_eligibility",
+        lambda _workspace_id: SimpleNamespace(
+            eligible=False, datasetFingerprint=None, to_dict=lambda: {"eligible": False},
+        ),
+    )
 
 def test_invalid_token_rejected():
     resp = client.post("/internal/ai/sync-user-data", json={"userId": "u1"}, headers={"X-Service-Token": "wrong"})

@@ -81,19 +81,9 @@ def train_prediction(user_id):
     return avg
 
 def train_autocat(user_id):
-    # Placeholder: fit TF-IDF on descriptions
-    from app.core.feature_store import path_for_user
-    path = path_for_user(user_id, "raw_transactions.parquet")
-    if not os.path.exists(path):
-        return None
-    df = pd.read_parquet(path)
-    # Fit TF-IDF if descriptions exist
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    texts = df["description"].fillna("").tolist()
-    vectorizer = TfidfVectorizer(max_features=1000)
-    vectorizer.fit(texts)
-    save_model("autocat", "v1", {"vectorizer": vectorizer}, user_id)
-    return vectorizer
+    from app.features.autocat.training import train_autocat as canonical_train_autocat
+
+    return canonical_train_autocat(user_id)
 
 def compute_anomaly_stats(user_id):
     # Placeholder: compute median/MAD per category

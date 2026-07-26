@@ -12,7 +12,7 @@ This README documents the main features, architecture, internal flows (sync & fe
 - Framework: FastAPI
 - Queue/worker: Redis + RQ (queue `ai-training`) — worker entrypoint: `worker/worker.py`
 - Feature store: local filesystem under the legacy physical path `storage/user_data/{workspaceId}` (parquet/json)
-- Models: persisted under `models/{feature}/{version}/{workspaceId}` (joblib)
+- Autocat models: immutable bundles under `models/autocat/autocat_v2/{workspaceId}/versions/{modelVersion}` with an atomic `active.json` pointer
 - Tests: PyTest (fakeredis used for queue tests)
 
 ---
@@ -27,17 +27,19 @@ This README documents the main features, architecture, internal flows (sync & fe
    - POST `/internal/ai/sync-user-data`
    - Auth: `X-Service-Token: <SECRET>` — validated by `app.core.auth.verify_service_token`
    - Payload: contract v1 uses `workspaceId`, separate `transactions`/`labels`/`feedback`, deterministic `syncId`, and `FULL` or `INCREMENTAL`. Legacy `userId`/`rawTransactions` remain accepted only for migration.
-   - Behavior: validates, writes feature store files, updates metadata, checks eligibility and enqueues training job (RQ) if eligible.
+   - Behavior: validates, writes feature store files, updates metadata, evaluates autocat-specific eligibility and enqueues the canonical trainer only when the supervised fingerprint changed and cooldown permits.
 
 3. Training queue
    - Redis URL: `REDIS_URL` (env)
    - Queue name: `ai-training`
-   - Helper: `app/core/training_queue.py` — `enqueue_training_job`, `get_job_status`, `persist_training_status`, `acquire_lock`/`release_lock`.
-   - Per-workspace lock: prevents concurrent training for the same workspace. Redis keys retain legacy naming internally.
+   - Helper: `app/core/training_queue.py` — `enqueue_autocat_training_job`, status helpers and legacy multi-feature queue compatibility.
+   - Per-workspace/per-feature lock, dataset fingerprint and cooldown prevent duplicate or concurrent autocat training.
 
 4. Trainers & Models
-   - Trainer entrypoint: `app/core/trainers.py` (functions: `run_all_trainers`, `train_prediction`, `train_autocat`, `compute_anomaly_stats`)
-   - Models are saved via `app/core/models_registry.py` into `models/{feature}/{version}/{workspaceId}/model.joblib`.
+   - Canonical autocat trainer: `app/features/autocat/training.py`. Legacy functions in `trainers.py` and `models_registry.py` only delegate to it.
+   - It reads `trusted_labels.parquet`, joins canonical transaction descriptions, evaluates cross-validated accuracy/macro-F1/per-category metrics, persists a complete candidate bundle and only then atomically activates it.
+   - `USER` and `USER_CONFIRMED_SUGGESTION` have trust 1.00, `BANK_MAPPING` 0.95 and `RULE` 0.90. `AI`, `HISTORY` and `DOMAIN_ALIAS` are never training labels without explicit confirmation.
+   - Inference never trains, never loads a global model and never fabricates a default category.
    - On train start/finish/failure the system persists `storage/user_data/{workspaceId}/training_status.json`.
 
 5. Worker
@@ -45,7 +47,7 @@ This README documents the main features, architecture, internal flows (sync & fe
    - Run the worker in a separate process/container.
 
 6. Metrics
-   - Prometheus metrics available at `/metrics` provided by `prometheus_client` (job count, durations, failures).
+   - Prometheus metrics available at `/metrics` include job counts/durations/failures plus autocat training and inference outcomes.
 
 ---
 
@@ -74,6 +76,14 @@ never select a feature partition.
 - POST `/internal/ai/savings-recommendations`
 - POST `/internal/ai/cashflow-insights`
 
+Autocat inference accepts `allowedCategoryIds`. A personalized result is only
+safe when its model belongs to the requested workspace, its confidence meets
+`AUTOCAT_SAFE_CONFIDENCE`, and its category belongs to that active domain. The
+response includes `status`, `strategy`, `modelVersion`, `modelScope`,
+`explanation` and `safeToApply`. Missing or incompatible models return semantic
+states such as `INSUFFICIENT_LABELED_HISTORY`, `MODEL_NOT_READY`,
+`MODEL_REJECTED` or `NO_SAFE_SUGGESTION`.
+
 - POST `/internal/ai/sync-user-data` (X-Service-Token or internal Bearer token)
   - Used by `budget-api` to push raw or aggregated workspace data.
   - Example payload:
@@ -99,6 +109,12 @@ never select a feature partition.
 
 - GET `/internal/ai/workspace/{workspaceId}/training-status` — canonical training status endpoint.
 - GET `/internal/ai/user/{userId}/training-status` — legacy compatibility alias.
+- GET `/internal/ai/workspace/{workspaceId}/autocat/eligibility`
+- POST `/internal/ai/workspace/{workspaceId}/autocat/train`
+- GET `/internal/ai/workspace/{workspaceId}/autocat/models`
+- GET `/internal/ai/workspace/{workspaceId}/autocat/models/active`
+- POST `/internal/ai/workspace/{workspaceId}/autocat/models/{modelVersion}/activate`
+- GET `/internal/ai/workspace/{workspaceId}/autocat/feedback-metrics`
 
 - GET `/internal/ai/health`
   - Purpose: verify Redis and worker heartbeat
@@ -125,8 +141,13 @@ models/
     v1/
       {workspaceId}/model.joblib
   autocat/
-    v1/
-      {workspaceId}/model.joblib
+    autocat_v2/
+      {workspaceId}/
+        active.json
+        versions/
+          {modelVersion}/
+            bundle.joblib
+            manifest.json
 ```
 
 Notes:
@@ -148,7 +169,7 @@ and accept only `USER`, `RULE`, `BANK_MAPPING`, or
 deduplicated by `feedbackId`. The currently connected feedback types are
 `SUGGESTION_ACCEPTED`, `SUGGESTION_REJECTED`, and `CATEGORY_CORRECTED`.
 
-Important: Do not rely solely on immediate training completion — training is performed asynchronously (RQ worker). Use `training_status.json` or training-status endpoint for readiness.
+Cold start is owned by `budget-api`: `BANK_MAPPING`, workspace history/rules and curated `DOMAIN_ALIAS` run before remote inference. The Python service does not use raw global data as a fallback. Training is asynchronous; use the eligibility/model/status endpoints for readiness.
 
 ---
 
@@ -165,7 +186,7 @@ Important: Do not rely solely on immediate training completion — training is p
       "jobId": "..."|null,
       "alreadyRunning": true|false
     }`
-  - Retry pattern: if `queued` is false and `alreadyRunning` is false, wait and re-POST after 30s (idempotent). If `alreadyRunning` is true, skip until job finishes.
+  - `trainingDecision` explains `QUEUED`, `NOT_ELIGIBLE`, `UNCHANGED_DATASET`, `COOLDOWN`, `ALREADY_RUNNING` or `QUEUE_UNAVAILABLE`; retry policy should follow that state instead of a fixed loop.
 - `GET /internal/ai/workspace/{workspaceId}/training-status`
   - Header: `X-Service-Token`
   - Response: `{
@@ -197,7 +218,7 @@ Example `railway.json` config:
 - Shared env vars:
   - `AI_SERVICE_TOKEN`
   - `REDIS_URL`
-  - Optional thresholds: `TRAINING_*`
+  - Optional autocat thresholds: `AUTOCAT_MIN_*`, `AUTOCAT_MAX_*`, `AUTOCAT_SAFE_CONFIDENCE`, `AUTOCAT_TRAINING_COOLDOWN_SECONDS`
 - Worker must run in Railway `worker` service with same env.
 - Add `Procfile` or Railway service settings accordingly.
 

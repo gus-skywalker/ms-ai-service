@@ -6,7 +6,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from app.core.auth import get_current_user_id, verify_service_token
 from app.core.health import internal_health
 from app.core.sync import handle_sync_request
-from app.core.training_queue import get_job_status, get_last_job_for_user
+from app.core.training_queue import enqueue_autocat_training_job, get_job_status, get_last_job_for_user
 from app.features.prediction.service import predict_monthly_expenses
 from app.features.prediction.types import (
     MonthlyExpensesPredictionRequest,
@@ -22,6 +22,9 @@ from app.features.autocat.types import (
     AutoCategorizeRequest,
     AutoCategorizeResponse,
 )
+from app.features.autocat.bundle_store import get_autocat_bundle_store, public_metadata
+from app.features.autocat.feedback_metrics import feedback_metrics
+from app.features.autocat.policy import evaluate_eligibility
 from app.features.cashflow.service import get_cashflow_insights
 from app.features.cashflow.types import (
     CashflowInsightsRequest,
@@ -181,6 +184,71 @@ async def workspace_training_status(workspace_id: str, x_service_token: str = He
     last_job_id = get_last_job_for_user(workspace_id)
     status = get_job_status(last_job_id) if last_job_id else None
     return {"workspaceId": workspace_id, "jobId": last_job_id, "status": status}
+
+
+@app.get("/internal/ai/workspace/{workspace_id}/autocat/eligibility")
+async def autocat_eligibility(workspace_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    return evaluate_eligibility(workspace_id).to_dict()
+
+
+@app.post("/internal/ai/workspace/{workspace_id}/autocat/train")
+async def enqueue_autocat_training(workspace_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    eligibility = evaluate_eligibility(workspace_id)
+    if not eligibility.eligible or not eligibility.datasetFingerprint:
+        return {"workspaceId": workspace_id, "queued": False, "decision": "NOT_ELIGIBLE", "eligibility": eligibility.to_dict()}
+    job_id, already_running, decision = enqueue_autocat_training_job(workspace_id, eligibility.datasetFingerprint)
+    return {
+        "workspaceId": workspace_id, "queued": job_id is not None, "jobId": job_id,
+        "alreadyRunning": already_running, "decision": decision, "eligibility": eligibility.to_dict(),
+    }
+
+
+@app.get("/internal/ai/workspace/{workspace_id}/autocat/models")
+async def autocat_models(workspace_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    store = get_autocat_bundle_store()
+    return {"workspaceId": workspace_id, "legacyArtifactPresent": store.legacy_artifact_present(workspace_id), "models": store.list_versions(workspace_id)}
+
+
+@app.get("/internal/ai/workspace/{workspace_id}/autocat/models/active")
+async def active_autocat_model(workspace_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    bundle = get_autocat_bundle_store().load_active(workspace_id)
+    return {"workspaceId": workspace_id, "model": public_metadata(bundle) if bundle else None}
+
+
+@app.post("/internal/ai/workspace/{workspace_id}/autocat/models/{model_version}/activate")
+async def activate_autocat_model(workspace_id: str, model_version: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    store = get_autocat_bundle_store()
+    try:
+        with store.training_lock(workspace_id):
+            bundle = store.activate(workspace_id, model_version)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"workspaceId": workspace_id, "activated": True, "model": public_metadata(bundle)}
+
+
+@app.get("/internal/ai/workspace/{workspace_id}/autocat/feedback-metrics")
+async def autocat_feedback_metrics(workspace_id: str, x_service_token: str = Header(None)):
+    if not verify_service_token(x_service_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    workspace_id = _require_internal_workspace_id(workspace_id)
+    return feedback_metrics(workspace_id)
 
 
 @app.get("/internal/ai/health")

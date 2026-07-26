@@ -17,6 +17,9 @@ QUEUE_NAME = "ai-training"
 _LAST_JOB_KEY = "training:last_job:{user_id}"
 _LOCK_KEY = "training:lock:{user_id}"
 _HEARTBEAT_KEY = "training:worker:heartbeat"
+_AUTOCAT_LOCK_KEY = "training:lock:autocat:{workspace_id}"
+_AUTOCAT_FINGERPRINT_KEY = "training:fingerprint:autocat:{workspace_id}"
+_AUTOCAT_COOLDOWN_KEY = "training:cooldown:autocat:{workspace_id}"
 
 # Initialize connection lazily to allow env changes in tests
 def _get_connection():
@@ -140,3 +143,55 @@ def get_job_status(job_id: str) -> Optional[dict]:
 def get_last_job_for_user(user_id: str) -> Optional[str]:
     job_id = _connection.get(_LAST_JOB_KEY.format(user_id=user_id))
     return job_id.decode() if job_id else None
+
+
+def enqueue_autocat_training_job(
+    workspace_id: str,
+    dataset_fingerprint: str,
+) -> tuple[Optional[str], bool, str]:
+    """Enqueue the canonical autocat trainer with per-workspace dedupe/cooldown."""
+    from app.core.config import get_settings
+
+    lock_key = _AUTOCAT_LOCK_KEY.format(workspace_id=workspace_id)
+    fingerprint_key = _AUTOCAT_FINGERPRINT_KEY.format(workspace_id=workspace_id)
+    cooldown_key = _AUTOCAT_COOLDOWN_KEY.format(workspace_id=workspace_id)
+    acquired = False
+    try:
+        previous = _connection.get(fingerprint_key)
+        if previous and previous.decode() == dataset_fingerprint:
+            return None, False, "UNCHANGED_DATASET"
+        if _connection.exists(cooldown_key):
+            return None, False, "COOLDOWN"
+        acquired = bool(_connection.set(lock_key, dataset_fingerprint, nx=True, ex=3600))
+        if not acquired:
+            return None, True, "ALREADY_RUNNING"
+        job = queue.enqueue(
+            "app.features.autocat.training.run_autocat_training_job",
+            workspace_id,
+            job_timeout=600,
+            retry=_DEFAULT_RETRY,
+        )
+        ttl = get_settings().AUTOCAT_TRAINING_COOLDOWN_SECONDS
+        _connection.set(fingerprint_key, dataset_fingerprint, ex=max(ttl * 4, 3600))
+        _connection.set(cooldown_key, job.id, ex=ttl)
+        _connection.set(_LAST_JOB_KEY.format(user_id=workspace_id), job.id)
+        TRAINING_JOBS_TOTAL.inc()
+        persist_training_status(workspace_id, {
+            "feature": "autocat",
+            "jobId": job.id,
+            "status": "queued",
+            "datasetFingerprint": dataset_fingerprint,
+        })
+        return job.id, False, "QUEUED"
+    except Exception:
+        logger.exception("failed to enqueue canonical autocat training", extra={"workspace_id": workspace_id})
+        if acquired:
+            _connection.delete(lock_key)
+        return None, False, "QUEUE_UNAVAILABLE"
+
+
+def release_autocat_lock(workspace_id: str) -> None:
+    try:
+        _connection.delete(_AUTOCAT_LOCK_KEY.format(workspace_id=workspace_id))
+    except Exception:
+        logger.exception("failed to release autocat lock", extra={"workspace_id": workspace_id})
