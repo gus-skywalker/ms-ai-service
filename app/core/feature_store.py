@@ -3,7 +3,9 @@ import json
 import pandas as pd
 from typing import List, Optional
 
-STORAGE_PATH = "storage/user_data"
+from app.core.config import get_settings
+
+STORAGE_PATH = get_settings().AI_FEATURE_STORE_DIR
 
 def path_for_user(user_id: str, filename: str) -> str:
     return os.path.join(STORAGE_PATH, str(user_id), filename)

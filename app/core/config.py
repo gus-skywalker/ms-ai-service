@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     AUTH_JWKS_CACHE_TTL_SECONDS: int = 300
     AUTH_JWKS_STALE_SECONDS: int = 3600
     AI_SERVICE_TOKEN: Optional[str] = "testtoken"
+    AI_FEATURE_STORE_DIR: str = "storage/user_data"
     AI_MODEL_DIR: str = "./models"
     AUTOCAT_MIN_LABELS: int = 21
     AUTOCAT_MIN_CATEGORIES: int = 2

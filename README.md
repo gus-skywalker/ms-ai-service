@@ -11,8 +11,8 @@ This README documents the main features, architecture, internal flows (sync & fe
 - Language: Python 3.x (project uses 3.9 in CI/dev)
 - Framework: FastAPI
 - Queue/worker: Redis + RQ (queue `ai-training`) — worker entrypoint: `worker/worker.py`
-- Feature store: local filesystem under the legacy physical path `storage/user_data/{workspaceId}` (parquet/json)
-- Autocat models: immutable bundles under `models/autocat/autocat_v2/{workspaceId}/versions/{modelVersion}` with an atomic `active.json` pointer
+- Feature store: configurable filesystem root (`AI_FEATURE_STORE_DIR`), defaulting locally to `storage/user_data`
+- Autocat models: immutable bundles under `AI_MODEL_DIR/autocat/autocat_v2/{workspaceId}/versions/{modelVersion}` with an atomic `active.json` pointer
 - Tests: PyTest (fakeredis used for queue tests)
 
 ---
@@ -20,7 +20,7 @@ This README documents the main features, architecture, internal flows (sync & fe
 ## Core concepts
 
 1. Feature Store
-   - `storage/user_data/{workspaceId}/` holds derived artifacts. The directory name is retained for artifact compatibility; the partition key is a workspace, not a user.
+   - `AI_FEATURE_STORE_DIR/{workspaceId}/` holds derived artifacts. The local default remains `storage/user_data`; the partition key is a workspace, not a user.
    - Helpers: `app/core/feature_store.py` — `path_for_user`, `save_user_data`, `UserFinancialDataProvider`.
 
 2. Sync Endpoint (internal)
@@ -40,11 +40,11 @@ This README documents the main features, architecture, internal flows (sync & fe
    - It reads `trusted_labels.parquet`, joins canonical transaction descriptions, evaluates cross-validated accuracy/macro-F1/per-category metrics, persists a complete candidate bundle and only then atomically activates it.
    - `USER` and `USER_CONFIRMED_SUGGESTION` have trust 1.00, `BANK_MAPPING` 0.95 and `RULE` 0.90. `AI`, `HISTORY` and `DOMAIN_ALIAS` are never training labels without explicit confirmation.
    - Inference never trains, never loads a global model and never fabricates a default category.
-   - On train start/finish/failure the system persists `storage/user_data/{workspaceId}/training_status.json`.
+   - On train start/finish/failure the system persists `AI_FEATURE_STORE_DIR/{workspaceId}/training_status.json`.
 
 5. Worker
    - `worker/worker.py` starts an RQ worker — on macOS uses `SimpleWorker` to avoid `fork()`+ObjectiveC issues.
-   - Run the worker in a separate process/container.
+   - Local development may run the worker in a separate terminal. The first Railway release runs API and worker as supervised processes in one container so they share the mounted filesystem.
 
 6. Metrics
    - Prometheus metrics available at `/metrics` include job counts/durations/failures plus autocat training and inference outcomes.
@@ -122,7 +122,7 @@ states such as `INSUFFICIENT_LABELED_HISTORY`, `MODEL_NOT_READY`,
 
 ---
 
-## Feature store layout (local)
+## Persistent storage layout
 
 ```
 storage/
@@ -151,6 +151,8 @@ models/
 ```
 
 Notes:
+- Local defaults are `AI_FEATURE_STORE_DIR=storage/user_data` and `AI_MODEL_DIR=./models`.
+- Railway uses `AI_FEATURE_STORE_DIR=/app/storage/user_data` and `AI_MODEL_DIR=/app/storage/models` on the volume mounted at `/app/storage`.
 - `training_status.json` is the canonical file for other services (like `budget-api`) to check model readiness if filesystem is shared.
 
 ---
@@ -198,29 +200,80 @@ Cold start is owned by `budget-api`: `BANK_MAPPING`, workspace history/rules and
 
 ## Railway deployment
 
-Example `railway.json` config:
+The first release uses one Railway service, one replica and one volume mounted at
+`/app/storage`. `scripts/start-railway.sh` supervises the API and RQ worker in
+the same container. If either process exits, the script stops the other and
+returns a failure so Railway can restart the service.
+
+The repository `railway.json` contains only deployment configuration:
 
 ```json
 {
+  "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "env": {
-      "AI_SERVICE_TOKEN": "your_token",
-      "REDIS_URL": "redis://default:password@redis-12345.c250.us-east-1-4.ec2.cloud.redislabs.com:12345"
-    }
+    "builder": "RAILPACK"
+  },
+  "deploy": {
+    "startCommand": "bash scripts/start-railway.sh",
+    "healthcheckPath": "/internal/ai/health",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
   }
 }
 ```
 
-- Services:
-  - api: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
-  - worker: `python -m worker.worker`
-  - redis: official redis image
-- Shared env vars:
-  - `AI_SERVICE_TOKEN`
-  - `REDIS_URL`
-  - Optional autocat thresholds: `AUTOCAT_MIN_*`, `AUTOCAT_MAX_*`, `AUTOCAT_SAFE_CONFIDENCE`, `AUTOCAT_TRAINING_COOLDOWN_SECONDS`
-- Worker must run in Railway `worker` service with same env.
-- Add `Procfile` or Railway service settings accordingly.
+Configure these variables in the Railway service; never commit their production
+values:
+
+```env
+PORT=8000
+AI_SERVICE_TOKEN=${{shared.AI_SERVICE_TOKEN}}
+REDIS_URL=${{Redis.REDIS_URL}}
+AI_FEATURE_STORE_DIR=/app/storage/user_data
+AI_MODEL_DIR=/app/storage/models
+AUTOCAT_MIN_LABELS=21
+AUTOCAT_MIN_CATEGORIES=2
+AUTOCAT_MIN_EXAMPLES_PER_CATEGORY=3
+AUTOCAT_MAX_CATEGORY_CONCENTRATION=0.85
+AUTOCAT_MIN_LABEL_TRUST=0.90
+AUTOCAT_MIN_AVERAGE_TRUST=0.90
+AUTOCAT_MIN_DESCRIPTION_COVERAGE=0.60
+AUTOCAT_MIN_MACRO_F1=0.35
+AUTOCAT_MIN_ACCURACY=0.40
+AUTOCAT_MIN_BASELINE_LIFT=0.0
+AUTOCAT_MAX_MACRO_F1_REGRESSION=0.05
+AUTOCAT_SAFE_CONFIDENCE=0.60
+AUTOCAT_TRAINING_COOLDOWN_SECONDS=900
+PYTHONUNBUFFERED=1
+```
+
+The production start script requires the two exact volume paths above and
+rejects missing Redis or token configuration.
+Railway Volumes support a single service instance, so do not add replicas.
+Separating API and worker later requires an external shared feature and model
+store rather than service-local filesystems.
+
+Smoke test from inside the `ai-service` container (no `curl` dependency):
+
+```bash
+python -c "import os,httpx; url=f'http://127.0.0.1:{os.getenv(\"PORT\",\"8000\")}/internal/ai/health'; r=httpx.get(url,timeout=5); print(r.status_code); print(r.text)"
+```
+
+Expected response:
+
+```text
+200
+{"redis":"ok","worker":"ok"}
+```
+
+Verify the mounted paths and eventual model publication:
+
+```bash
+python -c "from app.core.config import get_settings; from app.core.feature_store import STORAGE_PATH; print('feature_store=', STORAGE_PATH); print('models=', get_settings().AI_MODEL_DIR)"
+ls -la /app/storage/user_data
+ls -la /app/storage/models
+```
 
 ---
 
@@ -276,14 +329,19 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 
 - `AI_SERVICE_TOKEN` — internal service token used by `budget-api` to call internal endpoints.
 - `REDIS_URL` — Redis connection used for RQ queue.
+- `AI_FEATURE_STORE_DIR` — workspace feature-store root; defaults to `storage/user_data` and must be `/app/storage/user_data` on Railway.
+- `AI_MODEL_DIR` — model and bundle root; defaults to `./models` and must be `/app/storage/models` on Railway.
 - `AUTH_SERVER_URL` — auth service base URL used to validate public endpoint JWTs.
 - `JWT_JWKS_PATH` — JWKS path appended to `AUTH_SERVER_URL`; defaults to `/oauth2/jwks`.
 - `AUTH_JWKS_TIMEOUT_SECONDS` — timeout for JWKS fetches; defaults to `3.0`.
 - `AUTH_JWKS_CACHE_TTL_SECONDS` — fresh JWKS cache lifetime; defaults to `300`.
 - `AUTH_JWKS_STALE_SECONDS` — max time to keep using cached JWKS when auth is temporarily unavailable; defaults to `3600`.
-- `TRAINING_MIN_MONTHS`, `TRAINING_MIN_TRANSACTIONS`, `TRAINING_MIN_DESCRIPTION_RATIO` — configurable thresholds for eligibility.
 - `TRAINING_FORCE_ENQUEUE` — dev-only flag to bypass eligibility (do NOT enable in prod).
-- `AI_MODEL_DIR` — optional override for model paths used in some tests.
+- `AUTOCAT_MIN_LABELS`, `AUTOCAT_MIN_CATEGORIES`, `AUTOCAT_MIN_EXAMPLES_PER_CATEGORY` — minimum supervised dataset requirements.
+- `AUTOCAT_MAX_CATEGORY_CONCENTRATION`, `AUTOCAT_MIN_LABEL_TRUST`, `AUTOCAT_MIN_AVERAGE_TRUST`, `AUTOCAT_MIN_DESCRIPTION_COVERAGE` — supervised-data quality gates.
+- `AUTOCAT_MIN_MACRO_F1`, `AUTOCAT_MIN_ACCURACY`, `AUTOCAT_MIN_BASELINE_LIFT`, `AUTOCAT_MAX_MACRO_F1_REGRESSION` — model publication gates.
+- `AUTOCAT_SAFE_CONFIDENCE` — minimum confidence for a safe personalized suggestion.
+- `AUTOCAT_TRAINING_COOLDOWN_SECONDS` — queue cooldown for changed supervised datasets.
 
 ---
 
@@ -291,7 +349,7 @@ Notes for macOS: worker defaults to `SimpleWorker` to avoid Objective-C fork iss
 
 - Structured logs use `logger.info(..., extra={"user_id":..., ...})` throughout the code base.
 - Metrics are available at `/metrics` for Prometheus scraping.
-- Training status is persisted to `storage/user_data/{workspaceId}/training_status.json`.
+- Training status is persisted to `AI_FEATURE_STORE_DIR/{workspaceId}/training_status.json`.
 
 ---
 

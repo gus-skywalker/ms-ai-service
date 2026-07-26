@@ -1,29 +1,13 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
-  "name": "ai-service",
-  "services": [
-    {
-      "name": "api",
-      "start": "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}",
-      "env": {
-        "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN}",
-        "REDIS_URL": "${REDIS_URL}",
-        "TRAINING_MIN_MONTHS": "6",
-        "TRAINING_MIN_TRANSACTIONS": "100",
-        "TRAINING_MIN_DESCRIPTION_RATIO": "0.5"
-      }
-    },
-    {
-      "name": "worker",
-      "start": "python -m worker.worker",
-      "env": {
-        "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN}",
-        "REDIS_URL": "${REDIS_URL}"
-      }
-    }
-  ],
-  "variables": [
-    { "key": "AI_SERVICE_TOKEN", "value": "", "scope": "global" },
-    { "key": "REDIS_URL", "value": "", "scope": "global" }
-  ]
+  "build": {
+    "builder": "RAILPACK"
+  },
+  "deploy": {
+    "startCommand": "bash scripts/start-railway.sh",
+    "healthcheckPath": "/internal/ai/health",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
 }
