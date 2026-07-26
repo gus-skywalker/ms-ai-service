@@ -202,8 +202,11 @@ Cold start is owned by `budget-api`: `BANK_MAPPING`, workspace history/rules and
 
 The first release uses one Railway service, one replica and one volume mounted at
 `/app/storage`. `scripts/start-railway.sh` supervises the API and RQ worker in
-the same container. If either process exits, the script stops the other and
-returns a failure so Railway can restart the service.
+the same container. The API is started through `python -m app.serve`, which
+pre-binds one IPv6 socket with `IPV6_V6ONLY=0` so Railway healthchecks and public
+traffic can use IPv4 while `*.railway.internal` traffic uses IPv6. If either
+process exits, the script stops the other and returns a failure so Railway can
+restart the service.
 
 The repository `railway.json` contains only deployment configuration:
 
@@ -258,6 +261,7 @@ Smoke test from inside the `ai-service` container (no `curl` dependency):
 
 ```bash
 python -c "import os,httpx; url=f'http://127.0.0.1:{os.getenv(\"PORT\",\"8000\")}/internal/ai/health'; r=httpx.get(url,timeout=5); print(r.status_code); print(r.text)"
+python -c "import os,httpx; url=f'http://[::1]:{os.getenv(\"PORT\",\"8000\")}/internal/ai/health'; c=httpx.Client(trust_env=False); r=c.get(url,timeout=5); print(r.status_code); print(r.text)"
 ```
 
 Expected response:

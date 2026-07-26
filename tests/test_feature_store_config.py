@@ -55,3 +55,6 @@ def test_railway_manifest_and_supervisor_are_release_safe():
     }
     assert os.access(script, os.X_OK)
     subprocess.run(["bash", "-n", script], check=True)
+    script_contents = script.read_text(encoding="utf-8")
+    assert "python -m app.serve &" in script_contents
+    assert "uvicorn app.main:app" not in script_contents

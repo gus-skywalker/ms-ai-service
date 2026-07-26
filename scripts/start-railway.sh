@@ -50,7 +50,7 @@ trap handle_signal TERM INT
 python -m worker.worker &
 worker_pid=$!
 
-uvicorn app.main:app --host "::" --port "${PORT:-8000}" &
+python -m app.serve &
 api_pid=$!
 
 set +e
